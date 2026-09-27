@@ -11,6 +11,7 @@ use deslop_llm::LlmClient;
 use deslop_parser::CodebaseScanner;
 
 mod lsp;
+mod mcp;
 mod tui;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
@@ -180,6 +181,9 @@ enum Commands {
 
     /// Launch Language Server Protocol (LSP) server over stdio for IDE integration
     Lsp,
+
+    /// Launch Model Context Protocol (MCP) server over stdio for AI agent tool integration
+    Mcp,
 }
 
 #[derive(Tabled)]
@@ -806,6 +810,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Lsp => {
             let mut server = lsp::LspServer::new();
             server.start()?;
+        }
+        Commands::Mcp => {
+            mcp::McpServer::start()?;
         }
     }
 

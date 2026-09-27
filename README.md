@@ -89,6 +89,9 @@ target/release/deslop trace ./path/to/codebase --spans ./spans.json
 # Launch Language Server Protocol (LSP) daemon for VS Code, Neovim, and Helix
 target/release/deslop lsp
 
+# Launch Model Context Protocol (MCP) server over stdio for AI agent tool integration
+target/release/deslop mcp
+
 # CI/CD Quality Gate
 target/release/deslop check ./path/to/codebase --max-slop 25
 ```
@@ -115,6 +118,51 @@ export OPENROUTER_API_KEY="your-openrouter-key"
 If no key is present, Deslop runs in **Offline Deterministic Mode** with zero external network calls.
 
 ---
+
+## Model Context Protocol (MCP) for AI Agents
+
+Deslop implements a native MCP server (`deslop mcp`) compliant with the **Model Context Protocol (2024-11-05)** specification over `stdio`. This allows autonomous AI coding assistants (Claude Code, Cursor, Antigravity, Gemini CLI) to use Deslop as a specialized architectural analysis and de-looping tool.
+
+### Exposed MCP Tools
+
+1. `deslop_scan`: Computes the Slop Index (0-100), LOC, symbols, and lists top debt findings.
+2. `deslop_deloop`: Discovers cycles and outputs the Feedback Arc Set (FAS) cut edge and actionable steps.
+3. `deslop_deep`: Computes Robert C. Martin's Package Coupling ($C_a, C_e, I, A, D$), Zone of Pain, and dominator bottlenecks.
+4. `deslop_capacity`: Predicts maximum concurrent users and RPS breaking points across hardware devices.
+5. `deslop_testgen`: Synthesizes characterization and property-based test suites to capture behavioral invariants.
+6. `deslop_prune_diff`: Generates a unified diff patch preview showing dead code to delete and tollbooths to collapse.
+7. `deslop_scip`: Exports the complete symbol dependency graph in standard SCIP JSON format.
+
+### Configuring AI Agent Platforms
+
+#### Claude Desktop / Claude Code (`~/.claude/claude_desktop_config.json` or `claude.json`)
+
+```json
+{
+  "mcpServers": {
+    "deslop": {
+      "command": "deslop",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+#### Cursor (`~/.cursor/mcp.json` or project `.cursor/mcp.json`)
+
+```json
+{
+  "mcpServers": {
+    "deslop": {
+      "command": "deslop",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+---
+
 
 ## Running with Docker
 
