@@ -1,0 +1,13 @@
+[package]
+name = "deslop-graph"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Graph and network analysis algorithms for deslop"
+
+[dependencies]
+deslop-core = { workspace = true }
+petgraph = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,11 @@
+[package]
+name = "deslop-detector"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Slop and anti-pattern detection engine for deslop"
+
+[dependencies]
+deslop-core = { workspace = true }
+deslop-graph = { workspace = true }

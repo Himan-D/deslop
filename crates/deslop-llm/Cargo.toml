@@ -1,0 +1,15 @@
+[package]
+name = "deslop-llm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Bring-Your-Own-Key LLM client for semantic architecture synthesis"
+
+[dependencies]
+deslop-core = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }

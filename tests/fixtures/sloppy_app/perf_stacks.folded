@@ -1,0 +1,3 @@
+main;processA;processB 4500
+main;compute_wrapper;target_calculation 1200
+main;some_other_handler 800

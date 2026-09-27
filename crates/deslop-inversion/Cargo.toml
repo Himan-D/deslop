@@ -1,0 +1,16 @@
+[package]
+name = "deslop-inversion"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Architecture and specification inversion synthesizer for deslop"
+
+[dependencies]
+deslop-core = { workspace = true }
+deslop-graph = { workspace = true }
+deslop-detector = { workspace = true }
+deslop-llm = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

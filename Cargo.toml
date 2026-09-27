@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/deslop-core",
+    "crates/deslop-parser",
+    "crates/deslop-graph",
+    "crates/deslop-detector",
+    "crates/deslop-llm",
+    "crates/deslop-inversion",
+    "crates/deslop-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Deslop Contributors"]
+license = "MIT OR Apache-2.0"
+description = "Codebase Inversion & Architectural De-slopping Engine in Rust"
+
+[workspace.dependencies]
+deslop-core = { path = "crates/deslop-core" }
+deslop-parser = { path = "crates/deslop-parser" }
+deslop-graph = { path = "crates/deslop-graph" }
+deslop-detector = { path = "crates/deslop-detector" }
+deslop-llm = { path = "crates/deslop-llm" }
+deslop-inversion = { path = "crates/deslop-inversion" }
+
+petgraph = { version = "0.6", features = ["serde-1"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits", "visit"] }
+quote = "1.0"
+proc-macro2 = { version = "1.0", features = ["span-locations"] }
+walkdir = "2.5"
+regex = "1.10"
+anyhow = "1.0"
+thiserror = "1.0"
+clap = { version = "4.5", features = ["derive", "cargo"] }
+colored = "2.1"
+sha2 = "0.10"
+indicatif = "0.17"
+tabled = { version = "0.15", features = ["ansi"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = false
