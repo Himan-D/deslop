@@ -1,6 +1,6 @@
 use deslop_core::{
-    DependencyEdge, DependencyEdgeKind, Severity, SlopFinding, SlopKind, Symbol, SymbolKind,
-    Visibility,
+    ArchitectureConfig, DependencyEdge, DependencyEdgeKind, Severity, SlopFinding, SlopKind,
+    Symbol, SymbolKind, Visibility,
 };
 use deslop_graph::SymbolGraph;
 use std::collections::HashMap;
@@ -12,6 +12,15 @@ impl SlopDetectorEngine {
         symbols: &[Symbol],
         edges: &[DependencyEdge],
         graph: &SymbolGraph,
+    ) -> Vec<SlopFinding> {
+        Self::analyze_with_config(symbols, edges, graph, None)
+    }
+
+    pub fn analyze_with_config(
+        symbols: &[Symbol],
+        edges: &[DependencyEdge],
+        graph: &SymbolGraph,
+        config: Option<&ArchitectureConfig>,
     ) -> Vec<SlopFinding> {
         let mut findings = Vec::new();
 
@@ -33,7 +42,87 @@ impl SlopDetectorEngine {
         // 6. God Object Detector
         findings.extend(Self::detect_god_objects(symbols, graph));
 
-        findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+        // 7. Architectural Layer & Forbidden Boundary Detector
+        if let Some(cfg) = config {
+            findings.extend(Self::detect_architecture_violations(symbols, edges, cfg));
+        }
+
+        findings.sort_by_key(|b| std::cmp::Reverse(b.severity));
+        findings
+    }
+
+    /// Evaluates ArchUnit-style declarative architectural rules and forbidden dependencies
+    fn detect_architecture_violations(
+        symbols: &[Symbol],
+        edges: &[DependencyEdge],
+        config: &ArchitectureConfig,
+    ) -> Vec<SlopFinding> {
+        let mut findings = Vec::new();
+
+        let sym_files: HashMap<&str, (&std::path::Path, usize)> = symbols
+            .iter()
+            .map(|s| (s.id.as_str(), (s.file_path.as_path(), s.span.start_line)))
+            .collect();
+
+        for edge in edges {
+            let from_path = sym_files
+                .get(edge.from_symbol.as_str())
+                .map(|(p, _)| p.to_string_lossy())
+                .unwrap_or_default();
+            let to_path = sym_files
+                .get(edge.to_symbol.as_str())
+                .map(|(p, _)| p.to_string_lossy())
+                .unwrap_or_default();
+            let (file_path, line) = sym_files
+                .get(edge.from_symbol.as_str())
+                .map(|(p, l)| (p.to_path_buf(), *l))
+                .unwrap_or_default();
+
+            // Check forbidden rules
+            for rule in &config.forbidden_rules {
+                if from_path.contains(&rule.from) && to_path.contains(&rule.to) {
+                    let desc = rule.description.clone().unwrap_or_else(|| {
+                        format!("Dependency from '{}' to '{}' is explicitly forbidden by architecture policy.", rule.from, rule.to)
+                    });
+                    findings.push(SlopFinding {
+                        kind: SlopKind::LayerViolation,
+                        symbol_id: edge.from_symbol.clone(),
+                        file_path: file_path.clone(),
+                        line,
+                        severity: Severity::Critical,
+                        confidence: 1.0,
+                        title: format!("Architectural Rule Violation: {} -> {}", rule.from, rule.to),
+                        description: desc,
+                        remediation: "Invert dependency or extract a common interface into a lower domain layer.".to_string(),
+                        estimated_lines_saved: 0,
+                    });
+                }
+            }
+
+            // Check strict monotonic layer ordering
+            if !config.layers.is_empty() {
+                let from_layer_idx = config.layers.iter().position(|l| from_path.contains(l));
+                let to_layer_idx = config.layers.iter().position(|l| to_path.contains(l));
+
+                if let (Some(f_idx), Some(t_idx)) = (from_layer_idx, to_layer_idx) {
+                    if f_idx > t_idx {
+                        findings.push(SlopFinding {
+                            kind: SlopKind::LayerViolation,
+                            symbol_id: edge.from_symbol.clone(),
+                            file_path: file_path.clone(),
+                            line,
+                            severity: Severity::Critical,
+                            confidence: 1.0,
+                            title: format!("Layer Inversion: Layer '{}' imports upper Layer '{}'", config.layers[f_idx], config.layers[t_idx]),
+                            description: format!("Module '{}' in layer '{}' illegally depends on '{}' in higher layer '{}'. Strict monotonic DAG violated.", from_path, config.layers[f_idx], to_path, config.layers[t_idx]),
+                            remediation: "Apply Dependency Inversion Principle (DIP): higher layers should depend on abstractions in lower layers.".to_string(),
+                            estimated_lines_saved: 0,
+                        });
+                    }
+                }
+            }
+        }
+
         findings
     }
 

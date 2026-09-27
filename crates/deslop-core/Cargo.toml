@@ -10,3 +10,4 @@ description = "Core types and data models for deslop"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }

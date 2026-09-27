@@ -113,6 +113,33 @@ pub enum SlopKind {
     BarrelBloat,
     /// God object with outsized fan-in/fan-out and low cohesion
     GodObject,
+    /// Architectural layer or forbidden boundary rule violation (ArchUnit-style)
+    LayerViolation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ArchitectureConfig {
+    pub layers: Vec<String>,
+    pub forbidden_rules: Vec<ForbiddenRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForbiddenRule {
+    pub from: String,
+    pub to: String,
+    pub description: Option<String>,
+}
+
+impl ArchitectureConfig {
+    pub fn load_from_dir(root_dir: &std::path::Path) -> Option<Self> {
+        let path = root_dir.join("deslop.toml");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(cfg) = toml::from_str::<ArchitectureConfig>(&content) {
+                return Some(cfg);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

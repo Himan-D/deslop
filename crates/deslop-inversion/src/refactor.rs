@@ -74,8 +74,7 @@ impl RefactorEngine {
                 match f.kind {
                     SlopKind::TollboothWrapper | SlopKind::DeadOrphan => {
                         if let Some(sym) = symbols.iter().find(|s| s.id == f.symbol_id) {
-                            let start = sym.span.start_line.saturating_sub(1);
-                            let end = (sym.span.end_line).min(lines.len());
+                            let (start, end) = crate::lossless::LosslessRewriter::compute_symbol_pruning_bounds(&lines, &sym.span);
                             if start < end {
                                 for line_idx in start..end {
                                     lines_to_remove.push(line_idx);
@@ -101,9 +100,7 @@ impl RefactorEngine {
                     let mut modified_line = line.clone();
                     // Inline any known tollbooth wrappers
                     for (wrapper, target) in &inline_map {
-                        if modified_line.contains(wrapper) && !modified_line.contains(&format!("fn {}", wrapper)) {
-                            modified_line = modified_line.replace(wrapper, target);
-                        }
+                        modified_line = crate::lossless::LosslessRewriter::inline_callsite(&modified_line, wrapper, target);
                     }
                     new_lines.push(modified_line);
                 }

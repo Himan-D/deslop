@@ -1,8 +1,10 @@
 pub mod delooper;
+pub mod lossless;
 pub mod refactor;
 pub mod testgen;
 
 pub use delooper::{DeloopPlan, DelooperEngine, DeloopingStrategy};
+pub use lossless::LosslessRewriter;
 pub use refactor::{RefactorEngine, RefactorResult};
 pub use testgen::{SynthesizedTestSuite, TestGenerator};
 

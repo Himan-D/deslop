@@ -1,10 +1,12 @@
 pub mod capacity;
+pub mod churn;
 pub mod deep_analyzer;
 pub mod profiler;
 pub mod scip;
 pub mod trace;
 
 pub use capacity::{BreakdownRisk, CapacityAnalyzer, CapacityEstimate, CapacityReport, DeviceProfile};
+pub use churn::{ChurnAnalysisReport, GitChurnAnalyzer, GitHotspot, TemporalCoupling};
 pub use deep_analyzer::DeepAnalyzer;
 pub use profiler::{CallStackPath, StackProfileReport, StackProfiler};
 pub use scip::{ScipGenerator, ScipIndex};

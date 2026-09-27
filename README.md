@@ -92,8 +92,42 @@ target/release/deslop lsp
 # Launch Model Context Protocol (MCP) server over stdio for AI agent tool integration
 target/release/deslop mcp
 
+# Analyze git churn hotspots and hidden temporal coupling (CodeScene-style)
+target/release/deslop churn ./path/to/codebase --commits 500
+
 # CI/CD Quality Gate
 target/release/deslop check ./path/to/codebase --max-slop 25
+```
+
+---
+
+## Declarative Architectural Fitness Rules (`deslop.toml`)
+
+Place a `deslop.toml` in the root of any codebase to enforce custom layer hierarchies and forbidden cross-module dependencies. Deslop automatically loads this file during `scan`, `check`, and all MCP tool calls.
+
+```toml
+# deslop.toml — Architectural Fitness Rules (ArchUnit-style)
+
+# Strict layer ordering: each layer may only depend downward.
+# Violations of monotonic order are flagged as LayerViolation (Critical).
+layers = ["controller", "service", "repo"]
+
+# Explicit forbidden cross-module calls, regardless of layer position.
+[[forbidden_rules]]
+from = "repo"
+to   = "controller"
+description = "Repository layer cannot import or call the controller layer."
+
+[[forbidden_rules]]
+from = "service"
+to   = "controller"
+description = "Service layer cannot import or call the controller layer."
+```
+
+When a violation is detected, `deslop scan` prints a `Critical` finding:
+```
+[Critical] LayerViolation: repo::fetch -> controller::handle
+  repo layer depends on controller layer, violating strict monotonic layer ordering.
 ```
 
 ---
@@ -132,6 +166,7 @@ Deslop implements a native MCP server (`deslop mcp`) compliant with the **Model 
 5. `deslop_testgen`: Synthesizes characterization and property-based test suites to capture behavioral invariants.
 6. `deslop_prune_diff`: Generates a unified diff patch preview showing dead code to delete and tollbooths to collapse.
 7. `deslop_scip`: Exports the complete symbol dependency graph in standard SCIP JSON format.
+8. `deslop_churn`: Analyzes git commit history to detect churn hotspots and hidden temporal coupling (files that co-change with 0 static imports).
 
 ### Configuring AI Agent Platforms
 

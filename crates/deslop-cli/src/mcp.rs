@@ -1,5 +1,5 @@
 use deslop_detector::SlopDetectorEngine;
-use deslop_graph::{CapacityAnalyzer, DeepAnalyzer, ScipGenerator, SymbolGraph};
+use deslop_graph::{CapacityAnalyzer, DeepAnalyzer, GitChurnAnalyzer, ScipGenerator, SymbolGraph};
 use deslop_inversion::{DelooperEngine, TestGenerator};
 use deslop_parser::CodebaseScanner;
 use serde::{Deserialize, Serialize};
@@ -126,6 +126,17 @@ impl McpServer {
                                 "path": { "type": "string", "description": "Target directory path (defaults to '.')" }
                             }
                         }
+                    }),
+                    json!({
+                        "name": "deslop_churn",
+                        "description": "Analyzes git commit history to detect churn hotspots and hidden temporal coupling (files that frequently co-change with 0 static imports).",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": { "type": "string", "description": "Target repository path (defaults to '.')" },
+                                "commits": { "type": "integer", "description": "Number of recent commits to analyze (defaults to 500)" }
+                            }
+                        }
                     })
                 ];
 
@@ -149,6 +160,10 @@ impl McpServer {
                         }
                         "deslop_prune_diff" => Self::call_prune_diff(&target_path)?,
                         "deslop_scip" => Self::call_scip(&target_path)?,
+                        "deslop_churn" => {
+                            let commits = args.get("commits").and_then(|c| c.as_u64()).unwrap_or(500) as usize;
+                            Self::call_churn(&target_path, commits)?
+                        }
                         _ => format!("Error: Unknown tool '{}'", tool_name),
                     };
 
@@ -177,8 +192,33 @@ impl McpServer {
         let scanner = CodebaseScanner::new();
         let parsed = scanner.scan_cached(path, true)?;
         let graph = SymbolGraph::from_parsed(&parsed.symbols, &parsed.edges);
-        let findings = SlopDetectorEngine::analyze(&parsed.symbols, &parsed.edges, &graph);
+        let arch_config = deslop_core::ArchitectureConfig::load_from_dir(path);
+        let findings = SlopDetectorEngine::analyze_with_config(&parsed.symbols, &parsed.edges, &graph, arch_config.as_ref());
         Ok((parsed, graph, findings))
+    }
+
+    fn call_churn(path: &Path, commits: usize) -> anyhow::Result<String> {
+        match GitChurnAnalyzer::analyze(path, commits) {
+            Some(report) => {
+                let mut out = String::new();
+                out.push_str(&format!("Git Churn & Temporal Coupling Analysis ({})\n", path.display()));
+                out.push_str(&format!("Commits Analyzed: {}\n\n", report.total_commits_analyzed));
+                out.push_str("Top Churn Hotspots:\n");
+                for (i, h) in report.top_hotspots.iter().take(10).enumerate() {
+                    out.push_str(&format!("{}. {} ({} commits, {})\n", i + 1, h.file_path, h.commit_count, h.churn_risk));
+                }
+                out.push_str("\nHidden Temporal Couplings (>40% Co-change Frequency):\n");
+                if report.temporal_couplings.is_empty() {
+                    out.push_str("  No hidden temporal couplings detected above 40% threshold.\n");
+                } else {
+                    for (i, c) in report.temporal_couplings.iter().take(10).enumerate() {
+                        out.push_str(&format!("{}. {} <-> {} ({} co-commits, {:.1}% coupling)\n", i + 1, c.file_a, c.file_b, c.co_commit_count, c.coupling_pct));
+                    }
+                }
+                Ok(out)
+            }
+            None => Ok(format!("Git history not available or empty repository at {}", path.display())),
+        }
     }
 
     fn call_scan(path: &Path) -> anyhow::Result<String> {

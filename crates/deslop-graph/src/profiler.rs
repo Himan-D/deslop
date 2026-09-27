@@ -94,7 +94,7 @@ impl StackProfiler {
         recursive_symbols.dedup();
 
         // Sort paths by depth descending
-        all_paths.sort_by(|a, b| b.depth.cmp(&a.depth));
+        all_paths.sort_by_key(|b| std::cmp::Reverse(b.depth));
         all_paths.dedup_by(|a, b| a.frames == b.frames);
 
         let max_stack_depth = all_paths.first().map(|p| p.depth).unwrap_or(1);
@@ -113,7 +113,7 @@ impl StackProfiler {
             for (frame, count) in samples {
                 runtime_hotspots.push((frame.clone(), *count));
             }
-            runtime_hotspots.sort_by(|a, b| b.1.cmp(&a.1));
+            runtime_hotspots.sort_by_key(|b| std::cmp::Reverse(b.1));
 
             // Identify static symbols with zero runtime samples
             for idx in graph.graph.node_indices() {

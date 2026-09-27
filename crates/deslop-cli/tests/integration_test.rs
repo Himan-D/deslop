@@ -253,4 +253,112 @@ fn test_trace_ingestion_and_dynamic_rescue() {
     assert_eq!(report.dynamic_entrypoints_rescued[0].symbol_name, "calculate_regular_discount");
 }
 
+#[test]
+fn test_architectural_layer_rules() {
+    use deslop_core::{ArchitectureConfig, DependencyEdge, DependencyEdgeKind, ForbiddenRule, Severity, SlopKind, Symbol, SymbolKind, Visibility};
+    use deslop_detector::SlopDetectorEngine;
+    use deslop_graph::SymbolGraph;
+    use std::path::PathBuf;
+
+    let config = ArchitectureConfig {
+        layers: vec!["controller".to_string(), "service".to_string(), "repo".to_string()],
+        forbidden_rules: vec![ForbiddenRule {
+            from: "repo".to_string(),
+            to: "controller".to_string(),
+            description: Some("Repository layer cannot call controller layer".to_string()),
+        }],
+    };
+
+    let s1 = Symbol {
+        id: "repo::fetch".to_string(),
+        name: "fetch".to_string(),
+        kind: SymbolKind::Function,
+        file_path: PathBuf::from("src/repo.rs"),
+        span: deslop_core::SourceSpan::new(1, 1, 5, 2),
+        visibility: Visibility::Public,
+        loc: 5,
+        cyclomatic_complexity: 1,
+        doc: None,
+        signature: "fn fetch()".to_string(),
+        is_pure_hint: false,
+        ast_hash: None,
+    };
+    let s2 = Symbol {
+        id: "controller::handle".to_string(),
+        name: "handle".to_string(),
+        kind: SymbolKind::Function,
+        file_path: PathBuf::from("src/controller.rs"),
+        span: deslop_core::SourceSpan::new(1, 1, 5, 2),
+        visibility: Visibility::Public,
+        loc: 5,
+        cyclomatic_complexity: 1,
+        doc: None,
+        signature: "fn handle()".to_string(),
+        is_pure_hint: false,
+        ast_hash: None,
+    };
+
+    let edge = DependencyEdge {
+        from_symbol: "repo::fetch".to_string(),
+        to_symbol: "controller::handle".to_string(),
+        kind: DependencyEdgeKind::Calls,
+        count: 1,
+    };
+
+    let symbols = vec![s1, s2];
+    let edges = vec![edge];
+    let graph = SymbolGraph::from_parsed(&symbols, &edges);
+
+    let findings = SlopDetectorEngine::analyze_with_config(&symbols, &edges, &graph, Some(&config));
+    let layer_violations: Vec<_> = findings.iter().filter(|f| f.kind == SlopKind::LayerViolation).collect();
+    assert!(!layer_violations.is_empty(), "Should detect architectural layer violation");
+    assert_eq!(layer_violations[0].severity, Severity::Critical);
+}
+
+#[test]
+fn test_git_churn_analysis() {
+    use deslop_graph::GitChurnAnalyzer;
+    use std::path::Path;
+
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+
+    let report_opt = GitChurnAnalyzer::analyze(repo_root, 50);
+    assert!(report_opt.is_some(), "GitChurnAnalyzer should successfully analyze the deslop git repository");
+    let report = report_opt.unwrap();
+    assert!(report.total_commits_analyzed > 0, "Should have analyzed at least 1 commit");
+}
+
+#[test]
+fn test_lossless_trivia_preservation() {
+    use deslop_core::SourceSpan;
+    use deslop_inversion::LosslessRewriter;
+
+    let lines = vec![
+        "// Copyright notice".to_string(),
+        "/// Doc comment for dead function".to_string(),
+        "#[inline(always)]".to_string(),
+        "fn dead_function() {".to_string(),
+        "    println!(\"dead\");".to_string(),
+        "}".to_string(),
+        "".to_string(),
+        "fn live_function() { 42 }".to_string(),
+    ];
+
+    let span = SourceSpan {
+        start_line: 4, // 1-indexed
+        start_col: 1,
+        end_line: 6,
+        end_col: 2,
+    };
+
+    let (start_idx, end_idx) = LosslessRewriter::compute_symbol_pruning_bounds(&lines, &span);
+    assert_eq!(start_idx, 1, "Should absorb attached doc comment and attribute");
+    assert_eq!(end_idx, 6);
+}
+
+
 
