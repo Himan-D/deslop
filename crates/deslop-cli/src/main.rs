@@ -2,10 +2,12 @@ use clap::{Parser, Subcommand};
 use colored::*;
 use deslop_core::Severity;
 use deslop_detector::SlopDetectorEngine;
-use deslop_graph::{CapacityAnalyzer, DeepAnalyzer, StackProfiler, SymbolGraph};
+use deslop_graph::{CapacityAnalyzer, DeepAnalyzer, ScipGenerator, StackProfiler, SymbolGraph};
 use deslop_inversion::{DelooperEngine, InversionEngine, RefactorEngine};
 use deslop_llm::LlmClient;
 use deslop_parser::CodebaseScanner;
+
+mod tui;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -127,6 +129,24 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+
+    /// Launch interactive terminal UI dashboard (Ratatui)
+    Tui {
+        /// Target directory path
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+
+    /// Export Symbol Dependency Graph to Source Code Intelligence Protocol (SCIP) format
+    Scip {
+        /// Target directory path
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Output JSON file path (defaults to stdout if omitted)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Tabled)]
@@ -193,7 +213,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Scan { path, detailed } => {
             println!("{}", "deslop: codebase architectural scanner".bold());
-            println!("target: {}\n", path.display().to_string());
+            println!("target: {}\n", path.display());
 
             let (parsed, _graph, findings, elapsed) = scan_and_analyze(&path)?;
 
@@ -280,7 +300,7 @@ fn main() -> anyhow::Result<()> {
 
         Commands::Deloop { path } => {
             println!("{}", "deslop: principal de-looping & cycle breaker".bold());
-            println!("target: {}\n", path.display().to_string());
+            println!("target: {}\n", path.display());
 
             let (parsed, graph, _findings, elapsed) = scan_and_analyze(&path)?;
             let plans = DelooperEngine::compute_deloop_plans(&parsed.symbols, &graph);
@@ -309,7 +329,7 @@ fn main() -> anyhow::Result<()> {
 
         Commands::Invert { path, output } => {
             println!("{}", "deslop: architecture inversion synthesizer".bold());
-            println!("target: {}\n", path.display().to_string());
+            println!("target: {}\n", path.display());
 
             let (parsed, graph, findings, _elapsed) = scan_and_analyze(&path)?;
 
@@ -338,14 +358,14 @@ fn main() -> anyhow::Result<()> {
             println!("{:<28} {}", "Resolved Cycles:", inverted.deloop_plans.len());
             println!("{:<28} {}", "Target Components:", inverted.target_components.len());
             print_llm_status();
-            println!("{:<28} {}", "Output Specification:", out_file.display().to_string());
+            println!("{:<28} {}", "Output Specification:", out_file.display());
             println!("--------------------------------------------------\n");
-            println!("Wrote specification to: {}", out_file.display().to_string());
+            println!("Wrote specification to: {}", out_file.display());
         }
 
         Commands::Prune { path, diff, output } => {
             println!("{}", "deslop: automated refactor & prune preview".bold());
-            println!("target: {}\n", path.display().to_string());
+            println!("target: {}\n", path.display());
 
             let (_parsed, _graph, findings, _elapsed) = scan_and_analyze(&path)?;
             let prunable: Vec<_> = findings
@@ -372,7 +392,7 @@ fn main() -> anyhow::Result<()> {
 
             if let Some(out_path) = output {
                 fs::write(&out_path, &patch)?;
-                println!("Saved patch file to: {}", out_path.display().to_string());
+                println!("Saved patch file to: {}", out_path.display());
             } else if diff {
                 println!("{}", patch);
             }
@@ -380,7 +400,7 @@ fn main() -> anyhow::Result<()> {
 
         Commands::Apply { path, verify } => {
             println!("{}", "deslop: surgical refactor & verification".bold());
-            println!("target: {}\n", path.display().to_string());
+            println!("target: {}\n", path.display());
 
             let (parsed, _graph, findings, _elapsed) = scan_and_analyze(&path)?;
 
@@ -400,7 +420,7 @@ fn main() -> anyhow::Result<()> {
             println!("--------------------------------------------------");
             println!("{:<28} {}", "Files Modified:", res.files_modified.len());
             for f in &res.files_modified {
-                println!("  * {}", f.display().to_string());
+                println!("  * {}", f.display());
             }
             println!("{:<28} {}", "Items Pruned / Inlined:", res.items_pruned);
             println!("{:<28} {}", "Net Lines Deleted:", format!("-{} LOC", res.lines_deleted).green());
@@ -413,13 +433,13 @@ fn main() -> anyhow::Result<()> {
 
         Commands::Profile { path, stacks } => {
             println!("{}", "deslop: call stack profiler & indirection analyzer".bold());
-            println!("target: {}\n", path.display().to_string());
+            println!("target: {}\n", path.display());
 
             let (_parsed, graph, _findings, elapsed) = scan_and_analyze(&path)?;
 
             let runtime_samples = if let Some(stacks_file) = stacks {
                 if let Ok(content) = fs::read_to_string(&stacks_file) {
-                    println!("Loaded runtime stack profile from: {}", stacks_file.display().to_string());
+                    println!("Loaded runtime stack profile from: {}", stacks_file.display());
                     Some(StackProfiler::parse_folded_stacks(&content))
                 } else {
                     eprintln!("{}", format!("warning: could not read stacks file: {}", stacks_file.display()).yellow());
@@ -489,7 +509,7 @@ fn main() -> anyhow::Result<()> {
 
         Commands::Capacity { path } => {
             println!("{}", "deslop: codebase capacity & failure point predictor".bold());
-            println!("target: {}\n", path.display().to_string());
+            println!("target: {}\n", path.display());
 
             let (_parsed, graph, _findings, elapsed) = scan_and_analyze(&path)?;
 
@@ -570,7 +590,7 @@ fn main() -> anyhow::Result<()> {
 
         Commands::Deep { path } => {
             println!("{}", "deslop: deep architectural analysis & module physics".bold());
-            println!("target: {}\n", path.display().to_string());
+            println!("target: {}\n", path.display());
 
             let (_parsed, graph, _findings, elapsed) = scan_and_analyze(&path)?;
             let report = DeepAnalyzer::analyze(&graph);
@@ -633,7 +653,7 @@ fn main() -> anyhow::Result<()> {
                 println!("Deep module index (highest implementation power / interface complexity):\n");
                 let mut top_deep: Vec<_> = report.deep_module_scores.iter().filter(|s| s.is_deep).collect();
                 top_deep.sort_by(|a, b| b.depth_ratio.partial_cmp(&a.depth_ratio).unwrap_or(std::cmp::Ordering::Equal));
-                for (_i, s) in top_deep.iter().take(5).enumerate() {
+                for s in top_deep.iter().take(5) {
                     println!(
                         "  * {} (depth ratio: {:.1}x - LOC: {}, power: {})",
                         s.symbol_name.green().bold(),
@@ -643,6 +663,21 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
                 println!();
+            }
+        }
+        Commands::Tui { path } => {
+            let (parsed, graph, findings, _) = scan_and_analyze(&path)?;
+            tui::run_tui(&path, parsed, &graph, findings)?;
+        }
+        Commands::Scip { path, output } => {
+            let (parsed, _, _, _) = scan_and_analyze(&path)?;
+            let scip_index = ScipGenerator::generate(&path, &parsed.symbols, &parsed.edges);
+            let json = serde_json::to_string_pretty(&scip_index)?;
+            if let Some(out_path) = output {
+                fs::write(&out_path, &json)?;
+                println!("Exported SCIP index to {}", out_path.display().to_string().green());
+            } else {
+                println!("{}", json);
             }
         }
     }

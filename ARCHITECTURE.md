@@ -110,3 +110,27 @@ The release profile (`Cargo.toml`) enforces:
 - `lto = "fat"`: Cross-crate Link-Time Optimization.
 - `codegen-units = 1`: Single code generation unit for maximal inline optimization.
 - `panic = "abort"`: Zero unwinding tables, compact binary size (~5.5MB stripped).
+
+---
+
+## 8. Terminal User Interface (Ratatui & Crossterm)
+
+Deslop integrates a high-performance, interactive dashboard powered by `ratatui` and `crossterm`:
+- **Zero-Allocation Rendering Loop**: Terminal UI events run in an isolated alternate screen buffer with raw mode, rendering at 60 FPS without flickers.
+- **5 Navigable Views**:
+  - `[1] Overview`: Real-time slop score gauge, codebase size metrics (LOC, files, symbols, prunable lines), and language breakdown.
+  - `[2] Findings`: Interactive cursor-navigable list of architectural debt findings with severity indicators and remediation hints.
+  - `[3] Cycles`: Circular dependency loop explorer highlighting the Feedback Arc Set (FAS) cut edge and actionable extraction steps.
+  - `[4] Capacity`: Target concurrency and hardware limits across Cloud Servers, Local Workstations, Raspberry Pi 5, and Mobile.
+  - `[5] Deep Metrics`: Package Coupling table ($C_a, C_e, I, A, D$) and classification zones (Main Sequence vs. Zone of Pain vs. Zone of Uselessness).
+- **Keybindings**: `Tab` / `1-5` for tab navigation, `j` / `k` or arrows for selection, `q` / `Esc` for clean exit.
+
+---
+
+## 9. Source Code Intelligence Protocol (SCIP)
+
+Deslop natively exports symbol dependencies to the Source Code Intelligence Protocol (SCIP):
+- **Universal Code Graph**: Standardized index format mapping cross-file and cross-language symbols, definitions, and references.
+- **Occurrence Mapping**: Emits zero-indexed UTF-8 column and line ranges `[start_line, start_col, end_line, end_col]` for every symbol definition and callsite.
+- **Symbol Relationships**: Formulates `is_implementation`, `is_reference`, and `is_type_definition` relationships to integrate with Sourcegraph, LSP engines, and enterprise code graph viewers.
+

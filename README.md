@@ -71,6 +71,15 @@ target/release/deslop prune ./path/to/codebase
 # Surgically apply refactors with automatic rollback if test verification fails
 target/release/deslop apply ./path/to/codebase --verify "cargo test"
 
+# Launch interactive terminal UI dashboard (Ratatui)
+target/release/deslop tui ./path/to/codebase
+
+# Export symbol dependency graph to Source Code Intelligence Protocol (SCIP)
+target/release/deslop scip ./path/to/codebase -o index.scip.json
+
+# Deep architectural analysis: package coupling, main sequence distance, and dominator bottlenecks
+target/release/deslop deep ./path/to/codebase
+
 # CI/CD Quality Gate
 target/release/deslop check ./path/to/codebase --max-slop 25
 ```

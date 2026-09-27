@@ -123,3 +123,35 @@ fn test_deep_architecture_analysis() {
     assert!(report.average_depth_ratio > 0.0, "Should compute average depth ratio");
 }
 
+#[test]
+fn test_scip_generation() {
+    use deslop_graph::ScipGenerator;
+
+    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/fixtures/sloppy_app");
+
+    let scanner = CodebaseScanner::new();
+    let parsed = scanner.scan(&fixture_dir).unwrap();
+
+    let scip = ScipGenerator::generate(&fixture_dir, &parsed.symbols, &parsed.edges);
+
+    assert_eq!(scip.metadata.version, 1);
+    assert_eq!(scip.metadata.tool_info.name, "deslop");
+    assert!(!scip.documents.is_empty(), "SCIP must contain indexed documents");
+
+    // Check occurrences and symbols
+    let total_symbols: usize = scip.documents.iter().map(|d| d.symbols.len()).sum();
+    let total_occurrences: usize = scip.documents.iter().map(|d| d.occurrences.len()).sum();
+    assert!(total_symbols > 0, "SCIP should contain symbols");
+    assert!(total_occurrences > 0, "SCIP should contain occurrences");
+
+    // Verify JSON serialization
+    let json = serde_json::to_string(&scip).expect("SCIP must serialize to JSON");
+    assert!(json.contains("project_root"));
+    assert!(json.contains("occurrences"));
+}
+

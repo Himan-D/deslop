@@ -102,7 +102,7 @@ impl InversionEngine {
             if !retained.is_empty() {
                 let comp_name = module_path
                     .split('/')
-                    .last()
+                    .next_back()
                     .unwrap_or("core")
                     .to_string();
 
@@ -261,7 +261,7 @@ impl InversionEngine {
                 for step in &p.actionable_steps {
                     md.push_str(&format!("  1. {}\n", step));
                 }
-                md.push_str("\n");
+                md.push('\n');
             }
         }
 
@@ -283,7 +283,7 @@ impl InversionEngine {
                     md.push_str(&format!("- `~~{}~~` *(eliminated)*\n", p));
                 }
             }
-            md.push_str("\n");
+            md.push('\n');
         }
 
         md.push_str("## 4. Key Invariant Contracts (Verified Entrypoints)\n\n");
@@ -293,7 +293,7 @@ impl InversionEngine {
         if invariants.len() > 15 {
             md.push_str(&format!("- *(and {} other entrypoints)*\n", invariants.len() - 15));
         }
-        md.push_str("\n");
+        md.push('\n');
 
         md.push_str("## 5. De-Slop Action Plan (Immediate Remediations)\n\n");
         for (i, f) in findings.iter().take(12).enumerate() {

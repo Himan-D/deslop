@@ -114,8 +114,8 @@ impl CapacityAnalyzer {
             }
 
             // Detect memory accumulation / unbounded collection risks
-            if sig_lower.contains("vec<") || sig_lower.contains("hashmap<") || sig_lower.contains("array") || name_lower.contains("cache") || name_lower.contains("buffer") {
-                if sym.loc > 20 {
+            if (sig_lower.contains("vec<") || sig_lower.contains("hashmap<") || sig_lower.contains("array") || name_lower.contains("cache") || name_lower.contains("buffer"))
+                && sym.loc > 20 {
                     unbounded_allocs.push(BreakdownRisk {
                         trigger_pattern: "Unbounded In-Memory Collection / Buffer".to_string(),
                         failure_mode: "Out-Of-Memory (OOM) Kernel Kill".to_string(),
@@ -125,7 +125,6 @@ impl CapacityAnalyzer {
                         recommendation: "Apply an explicit LRU capacity bound and stream large payloads.".to_string(),
                     });
                 }
-            }
 
             // Detect blocking or synchronous file/network operations in handlers
             if (name_lower.contains("handle") || name_lower.contains("service") || name_lower.contains("route"))

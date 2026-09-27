@@ -142,7 +142,7 @@ impl DeepAnalyzer {
             // Measure downstream reachability from this node
             let mut bfs = Bfs::new(&graph.graph, idx);
             let mut reached = 0;
-            while let Some(_) = bfs.next(&graph.graph) {
+            while bfs.next(&graph.graph).is_some() {
                 reached += 1;
             }
 

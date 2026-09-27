@@ -24,3 +24,5 @@ tabled = { workspace = true }
 indicatif = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+ratatui = "0.30.2"
+crossterm = "0.29.0"
