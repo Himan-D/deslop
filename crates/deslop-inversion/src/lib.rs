@@ -1,8 +1,10 @@
 pub mod delooper;
 pub mod refactor;
+pub mod testgen;
 
 pub use delooper::{DeloopPlan, DelooperEngine, DeloopingStrategy};
 pub use refactor::{RefactorEngine, RefactorResult};
+pub use testgen::{SynthesizedTestSuite, TestGenerator};
 
 use deslop_core::{
     CodebaseStats, DependencyEdge, Severity, SlopFinding, SlopKind, Symbol, SymbolKind,

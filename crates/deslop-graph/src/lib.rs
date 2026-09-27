@@ -2,11 +2,13 @@ pub mod capacity;
 pub mod deep_analyzer;
 pub mod profiler;
 pub mod scip;
+pub mod trace;
 
 pub use capacity::{BreakdownRisk, CapacityAnalyzer, CapacityEstimate, CapacityReport, DeviceProfile};
 pub use deep_analyzer::DeepAnalyzer;
 pub use profiler::{CallStackPath, StackProfileReport, StackProfiler};
 pub use scip::{ScipGenerator, ScipIndex};
+pub use trace::{DynamicRescue, OtelSpan, TraceCorrelationReport, TraceIngestionEngine};
 
 use deslop_core::{DependencyEdge, DependencyEdgeKind, Symbol, Visibility};
 use petgraph::algo::tarjan_scc;

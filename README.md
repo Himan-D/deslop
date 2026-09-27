@@ -80,6 +80,15 @@ target/release/deslop scip ./path/to/codebase -o index.scip.json
 # Deep architectural analysis: package coupling, main sequence distance, and dominator bottlenecks
 target/release/deslop deep ./path/to/codebase
 
+# Synthesize characterization and property-based tests before refactoring
+target/release/deslop testgen ./path/to/codebase -o tests_invariants.rs
+
+# Ingest runtime OpenTelemetry traces to protect dynamic entrypoints from false-positive pruning
+target/release/deslop trace ./path/to/codebase --spans ./spans.json
+
+# Launch Language Server Protocol (LSP) daemon for VS Code, Neovim, and Helix
+target/release/deslop lsp
+
 # CI/CD Quality Gate
 target/release/deslop check ./path/to/codebase --max-slop 25
 ```

@@ -2,11 +2,15 @@ use clap::{Parser, Subcommand};
 use colored::*;
 use deslop_core::Severity;
 use deslop_detector::SlopDetectorEngine;
-use deslop_graph::{CapacityAnalyzer, DeepAnalyzer, ScipGenerator, StackProfiler, SymbolGraph};
-use deslop_inversion::{DelooperEngine, InversionEngine, RefactorEngine};
+use deslop_graph::{
+    CapacityAnalyzer, DeepAnalyzer, OtelSpan, ScipGenerator, StackProfiler, SymbolGraph,
+    TraceIngestionEngine,
+};
+use deslop_inversion::{DelooperEngine, InversionEngine, RefactorEngine, TestGenerator};
 use deslop_llm::LlmClient;
 use deslop_parser::CodebaseScanner;
 
+mod lsp;
 mod tui;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
@@ -147,6 +151,35 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+
+    /// Synthesize characterization and property-based tests to prevent behavioral regression
+    Testgen {
+        /// Target directory path
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Optional symbol name filter
+        #[arg(short, long)]
+        symbol: Option<String>,
+
+        /// Optional output file path
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Correlate static AST symbols with runtime OpenTelemetry / Jaeger spans
+    Trace {
+        /// Target directory path
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Path to OpenTelemetry JSON spans file
+        #[arg(short, long)]
+        spans: PathBuf,
+    },
+
+    /// Launch Language Server Protocol (LSP) server over stdio for IDE integration
+    Lsp,
 }
 
 #[derive(Tabled)]
@@ -679,6 +712,100 @@ fn main() -> anyhow::Result<()> {
             } else {
                 println!("{}", json);
             }
+        }
+        Commands::Testgen { path, symbol, output } => {
+            println!("{}", "deslop: automated characterization test synthesizer".bold());
+            println!("target: {}\n", path.display());
+
+            let (parsed, _, _, _) = scan_and_analyze(&path)?;
+
+            let suites = if let Some(sym_name) = symbol {
+                if let Some(target_sym) = parsed.symbols.iter().find(|s| s.name == sym_name) {
+                    vec![TestGenerator::generate_for_symbol(target_sym)]
+                } else {
+                    eprintln!("Error: Symbol '{}' not found in codebase.", sym_name);
+                    std::process::exit(1);
+                }
+            } else {
+                TestGenerator::generate_all(&parsed.symbols)
+            };
+
+            if suites.is_empty() {
+                println!("No testable functions or methods found in target scope.");
+                return Ok(());
+            }
+
+            println!("Synthesized {} characterization test suite(s):\n", suites.len());
+
+            let mut aggregated_tests = String::new();
+            for suite in &suites {
+                println!("  * Symbol: {} ({} cases) -> {}", suite.target_symbol.green().bold(), suite.test_count, suite.file_path);
+                aggregated_tests.push_str(&suite.test_code);
+                aggregated_tests.push_str("\n\n");
+            }
+
+            if let Some(out_path) = output {
+                fs::write(&out_path, &aggregated_tests)?;
+                println!("\nWritten tests to {}", out_path.display().to_string().green());
+            } else {
+                println!("\nSample synthesized test code:\n");
+                let preview: Vec<&str> = aggregated_tests.lines().take(25).collect();
+                println!("{}", preview.join("\n"));
+                if aggregated_tests.lines().count() > 25 {
+                    println!("... (use -o <file> to write full test suite to disk)");
+                }
+            }
+        }
+        Commands::Trace { path, spans } => {
+            println!("{}", "deslop: OpenTelemetry trace correlation & dynamic entrypoint analysis".bold());
+            println!("target: {}", path.display());
+            println!("trace telemetry file: {}\n", spans.display());
+
+            let (_parsed, graph, _, _) = scan_and_analyze(&path)?;
+
+            let span_data = fs::read_to_string(&spans)?;
+            let otel_spans: Vec<OtelSpan> = if let Ok(spans_list) = serde_json::from_str::<Vec<OtelSpan>>(&span_data) {
+                spans_list
+            } else if let Ok(val) = serde_json::from_str::<serde_json::Value>(&span_data) {
+                if let Some(arr) = val.get("spans").and_then(|v| v.as_array()) {
+                    serde_json::from_value(serde_json::Value::Array(arr.clone()))?
+                } else {
+                    anyhow::bail!("Unrecognized OpenTelemetry JSON span format");
+                }
+            } else {
+                anyhow::bail!("Invalid JSON in spans file: {}", spans.display());
+            };
+
+            let report = TraceIngestionEngine::correlate_traces(&graph, &otel_spans);
+
+            println!("OpenTelemetry Telemetry Ingestion Results:");
+            println!("  Total spans ingested: {}", report.total_spans_ingested.to_string().cyan().bold());
+            println!("  Active runtime symbols: {}", report.active_runtime_symbols.to_string().green().bold());
+            println!("  Dynamic entrypoints rescued: {}", report.dynamic_entrypoints_rescued.len().to_string().yellow().bold());
+            println!("  Verified dead symbols (0 static + 0 runtime calls): {}\n", report.verified_dead_symbols.len().to_string().red().bold());
+
+            if !report.dynamic_entrypoints_rescued.is_empty() {
+                println!("Rescued Dynamic Entrypoints (Protected from false-positive dead-code pruning):");
+                for r in &report.dynamic_entrypoints_rescued {
+                    println!("  * {} ({} runtime invocations) at {}", r.symbol_name.yellow().bold(), r.runtime_invocations, r.file_path);
+                }
+                println!();
+            }
+
+            if !report.verified_dead_symbols.is_empty() {
+                println!("Safe Dead-Code Pruning Candidates (Zero runtime traffic & zero static incoming edges):");
+                for s in report.verified_dead_symbols.iter().take(10) {
+                    println!("  - {}", s.red());
+                }
+                if report.verified_dead_symbols.len() > 10 {
+                    println!("  ... and {} more verified dead symbols", report.verified_dead_symbols.len() - 10);
+                }
+                println!();
+            }
+        }
+        Commands::Lsp => {
+            let mut server = lsp::LspServer::new();
+            server.start()?;
         }
     }
 

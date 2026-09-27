@@ -1,0 +1,47 @@
+name: Deslop Architectural CI & Quality Gate
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  architectural-gate:
+    name: Deslop Slop & Cycle Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Deslop
+        run: cargo build --release
+
+      - name: Run Test Suite
+        run: cargo test --workspace
+
+      - name: Run Deslop Quality Gate (Max Slop 25)
+        run: ./target/release/deslop check . --max-slop 25.0
+
+      - name: De-Looping Loop Verification
+        run: ./target/release/deslop deloop .
+
+      - name: Export SCIP Code Intelligence
+        run: ./target/release/deslop scip . -o index.scip.json
+
+      - name: Deep Coupling & Main Sequence Analysis
+        run: ./target/release/deslop deep .

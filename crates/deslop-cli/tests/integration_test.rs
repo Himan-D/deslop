@@ -155,3 +155,102 @@ fn test_scip_generation() {
     assert!(json.contains("occurrences"));
 }
 
+#[test]
+fn test_incremental_cache() {
+    use std::fs;
+
+    let temp_dir = std::env::temp_dir().join("deslop_test_incremental_cache");
+    let _ = fs::remove_dir_all(&temp_dir);
+    fs::create_dir_all(&temp_dir).unwrap();
+
+    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/fixtures/sloppy_app");
+
+    // Copy fixture files to temp_dir
+    for entry in fs::read_dir(&fixture_dir).unwrap().flatten() {
+        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            let dest = temp_dir.join(entry.file_name());
+            let _ = fs::copy(entry.path(), dest);
+        }
+    }
+
+    let scanner = CodebaseScanner::new();
+    let initial_parsed = scanner.scan_cached(&temp_dir, true).unwrap();
+
+    // Verify cache was saved
+    let cache_file = temp_dir.join(".deslop/cache.json");
+    assert!(cache_file.exists(), "Cache file .deslop/cache.json should exist");
+
+    // Second scan using the cached files
+    let cached_parsed = scanner.scan_cached(&temp_dir, true).unwrap();
+    assert_eq!(initial_parsed.stats.total_files, cached_parsed.stats.total_files);
+    assert_eq!(initial_parsed.stats.total_symbols, cached_parsed.stats.total_symbols);
+
+    // Clean up
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_characterization_testgen() {
+    use deslop_inversion::TestGenerator;
+
+    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/fixtures/sloppy_app");
+
+    let scanner = CodebaseScanner::new();
+    let parsed = scanner.scan(&fixture_dir).unwrap();
+
+    let suites = TestGenerator::generate_all(&parsed.symbols);
+    assert!(!suites.is_empty(), "Should generate characterization test suites");
+
+    let first = &suites[0];
+    assert!(!first.test_code.is_empty());
+    assert!(first.test_count > 0);
+}
+
+#[test]
+fn test_trace_ingestion_and_dynamic_rescue() {
+    use deslop_graph::{OtelSpan, TraceIngestionEngine};
+
+    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/fixtures/sloppy_app");
+
+    let scanner = CodebaseScanner::new();
+    let parsed = scanner.scan(&fixture_dir).unwrap();
+    let graph = SymbolGraph::from_parsed(&parsed.symbols, &parsed.edges);
+
+    let spans = vec![
+        OtelSpan {
+            name: "calculate_regular_discount".to_string(),
+            duration_ms: Some(15.2),
+            status: Some("ok".to_string()),
+            service_name: Some("pricing-service".to_string()),
+        },
+        OtelSpan {
+            name: "calculate_regular_discount".to_string(),
+            duration_ms: Some(12.0),
+            status: Some("ok".to_string()),
+            service_name: Some("pricing-service".to_string()),
+        },
+    ];
+
+    let report = TraceIngestionEngine::correlate_traces(&graph, &spans);
+    assert_eq!(report.total_spans_ingested, 2);
+    assert_eq!(report.active_runtime_symbols, 1);
+    assert!(!report.dynamic_entrypoints_rescued.is_empty(), "Should rescue dynamic entrypoint from false-positive dead code detection");
+    assert_eq!(report.dynamic_entrypoints_rescued[0].symbol_name, "calculate_regular_discount");
+}
+
+

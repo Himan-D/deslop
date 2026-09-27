@@ -134,3 +134,28 @@ Deslop natively exports symbol dependencies to the Source Code Intelligence Prot
 - **Occurrence Mapping**: Emits zero-indexed UTF-8 column and line ranges `[start_line, start_col, end_line, end_col]` for every symbol definition and callsite.
 - **Symbol Relationships**: Formulates `is_implementation`, `is_reference`, and `is_type_definition` relationships to integrate with Sourcegraph, LSP engines, and enterprise code graph viewers.
 
+---
+
+## 10. Incremental Hashing & Query Cache
+
+For large monorepos (10M+ LOC), Deslop provides sub-10ms incremental scanning:
+- **Content Hash Verification**: Computes cryptographic SHA-256 digests and filesystem modification timestamps (`mtime`).
+- **Cache Persistence**: Caches AST symbols, extracted edges, and LOC in `.deslop/cache.json`.
+- **Parallel Dirty Detection**: Unmodified files bypass disk reads and tree-sitter AST parsing entirely, achieving near-instantaneous re-indexes.
+
+---
+
+## 11. Automated Characterization & Property Test Synthesis
+
+Before pruning wrappers or resolving cyclic dependencies, `deslop testgen` synthesizes behavioral invariant test suites:
+- **Multi-Language Generation**: Generates native property tests for Rust (`proptest`), TypeScript (`vitest`/`jest`), Python (`pytest`), and Go (`testing`).
+- **Invariant Contracts**: Fuzzes boundary conditions, null inputs, and idempotency to guarantee zero behavioral divergence before mutations are merged.
+
+---
+
+## 12. Dynamic Telemetry Ingestion & Language Server Protocol (LSP)
+
+- **OpenTelemetry Correlation (`deslop trace`)**: Ingests JSON traces from OpenTelemetry or Jaeger to correlate static AST graphs with real production throughput (RPS). Protects dynamic entrypoints and plugin handlers from false-positive dead-code pruning.
+- **Language Server Protocol (`deslop lsp`)**: Implements standard JSON-RPC 2.0 over `stdio`, serving diagnostics, code actions (1-click wrapper inlining and leaf module extraction), and workspace checks directly to VS Code, Neovim, Helix, and Cursor.
+
+
