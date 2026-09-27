@@ -1,4 +1,4 @@
-use crate::SymbolGraph;
+use crate::{GraphAnalyzer, SymbolGraph};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,8 +79,10 @@ pub struct CapacityReport {
 
 pub struct CapacityAnalyzer;
 
-impl CapacityAnalyzer {
-    pub fn analyze(graph: &SymbolGraph) -> CapacityReport {
+impl GraphAnalyzer for CapacityAnalyzer {
+    type Report = CapacityReport;
+
+    fn analyze(graph: &SymbolGraph) -> CapacityReport {
         let mut quadratic_loops = Vec::new();
         let mut unbounded_allocs = Vec::new();
         let mut deep_recursion_risks = Vec::new();
@@ -109,26 +111,39 @@ impl CapacityAnalyzer {
                     estimated_breaking_threshold: "~1,200 concurrent requests".to_string(),
                     affected_symbol: sym.name.clone(),
                     file_location: format!("{}:{}", sym.file_path.display(), sym.span.start_line),
-                    recommendation: "Decompose nested branching and cache repetitive computation.".to_string(),
+                    recommendation: "Decompose nested branching and cache repetitive computation."
+                        .to_string(),
                 });
             }
 
             // Detect memory accumulation / unbounded collection risks
-            if (sig_lower.contains("vec<") || sig_lower.contains("hashmap<") || sig_lower.contains("array") || name_lower.contains("cache") || name_lower.contains("buffer"))
-                && sym.loc > 20 {
-                    unbounded_allocs.push(BreakdownRisk {
-                        trigger_pattern: "Unbounded In-Memory Collection / Buffer".to_string(),
-                        failure_mode: "Out-Of-Memory (OOM) Kernel Kill".to_string(),
-                        estimated_breaking_threshold: "~18,000 active sessions or large payloads".to_string(),
-                        affected_symbol: sym.name.clone(),
-                        file_location: format!("{}:{}", sym.file_path.display(), sym.span.start_line),
-                        recommendation: "Apply an explicit LRU capacity bound and stream large payloads.".to_string(),
-                    });
-                }
+            if (sig_lower.contains("vec<")
+                || sig_lower.contains("hashmap<")
+                || sig_lower.contains("array")
+                || name_lower.contains("cache")
+                || name_lower.contains("buffer"))
+                && sym.loc > 20
+            {
+                unbounded_allocs.push(BreakdownRisk {
+                    trigger_pattern: "Unbounded In-Memory Collection / Buffer".to_string(),
+                    failure_mode: "Out-Of-Memory (OOM) Kernel Kill".to_string(),
+                    estimated_breaking_threshold: "~18,000 active sessions or large payloads"
+                        .to_string(),
+                    affected_symbol: sym.name.clone(),
+                    file_location: format!("{}:{}", sym.file_path.display(), sym.span.start_line),
+                    recommendation:
+                        "Apply an explicit LRU capacity bound and stream large payloads."
+                            .to_string(),
+                });
+            }
 
             // Detect blocking or synchronous file/network operations in handlers
-            if (name_lower.contains("handle") || name_lower.contains("service") || name_lower.contains("route"))
-                && (sig_lower.contains("sleep") || sig_lower.contains("read_to_string") || sig_lower.contains("blocking"))
+            if (name_lower.contains("handle")
+                || name_lower.contains("service")
+                || name_lower.contains("route"))
+                && (sig_lower.contains("sleep")
+                    || sig_lower.contains("read_to_string")
+                    || sig_lower.contains("blocking"))
             {
                 blocking_in_handlers.push(BreakdownRisk {
                     trigger_pattern: "Synchronous Blocking Call in Request Path".to_string(),
@@ -150,7 +165,9 @@ impl CapacityAnalyzer {
                 estimated_breaking_threshold: "Depth > 1,024 recursive stack frames".to_string(),
                 affected_symbol: cycle.join(" ⇄ "),
                 file_location: "Cross-file mutual dependency".to_string(),
-                recommendation: "Apply Dependency Inversion or Leaf Module Extraction to break the loop.".to_string(),
+                recommendation:
+                    "Apply Dependency Inversion or Leaf Module Extraction to break the loop."
+                        .to_string(),
             });
         }
 

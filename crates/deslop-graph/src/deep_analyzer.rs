@@ -5,12 +5,14 @@ use petgraph::visit::Bfs;
 use petgraph::Direction;
 use std::collections::{HashMap, HashSet};
 
-use crate::SymbolGraph;
+use crate::{GraphAnalyzer, SymbolGraph};
 
 pub struct DeepAnalyzer;
 
-impl DeepAnalyzer {
-    pub fn analyze(graph: &SymbolGraph) -> DeepArchitectureReport {
+impl GraphAnalyzer for DeepAnalyzer {
+    type Report = DeepArchitectureReport;
+
+    fn analyze(graph: &SymbolGraph) -> DeepArchitectureReport {
         let module_metrics = Self::compute_module_metrics(graph);
         let bottlenecks = Self::compute_bottlenecks(graph);
         let deep_module_scores = Self::compute_deep_scores(graph);
@@ -29,7 +31,9 @@ impl DeepAnalyzer {
             average_depth_ratio: avg_depth,
         }
     }
+}
 
+impl DeepAnalyzer {
     /// Computes Robert C. Martin's Package Coupling & Main Sequence Metrics
     fn compute_module_metrics(graph: &SymbolGraph) -> Vec<ModuleMetrics> {
         let mut module_symbols: HashMap<String, Vec<petgraph::graph::NodeIndex>> = HashMap::new();
@@ -124,7 +128,11 @@ impl DeepAnalyzer {
             });
         }
 
-        results.sort_by(|a, b| b.distance_from_main_seq.partial_cmp(&a.distance_from_main_seq).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.distance_from_main_seq
+                .partial_cmp(&a.distance_from_main_seq)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results
     }
 
@@ -146,7 +154,10 @@ impl DeepAnalyzer {
                 reached += 1;
             }
 
-            let in_deg = graph.graph.neighbors_directed(idx, Direction::Incoming).count();
+            let in_deg = graph
+                .graph
+                .neighbors_directed(idx, Direction::Incoming)
+                .count();
             let reach_pct = (reached as f64 / total_nodes as f64) * 100.0;
 
             // Chokepoint: high reachability (> 30% of entire graph) and multiple incoming callers
@@ -162,7 +173,11 @@ impl DeepAnalyzer {
             }
         }
 
-        bottlenecks.sort_by(|a, b| b.downstream_reach_pct.partial_cmp(&a.downstream_reach_pct).unwrap_or(std::cmp::Ordering::Equal));
+        bottlenecks.sort_by(|a, b| {
+            b.downstream_reach_pct
+                .partial_cmp(&a.downstream_reach_pct)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         bottlenecks.truncate(10);
         bottlenecks
     }
@@ -178,7 +193,12 @@ impl DeepAnalyzer {
             }
 
             // Interface complexity approximated by signature parameter count & signature length
-            let param_count = sym.signature.matches(',').count() + if sym.signature.contains('(') && !sym.signature.contains("()") { 1 } else { 0 };
+            let param_count = sym.signature.matches(',').count()
+                + if sym.signature.contains('(') && !sym.signature.contains("()") {
+                    1
+                } else {
+                    0
+                };
             let interface_complexity = (param_count * 2) + (sym.signature.len() / 25).max(1);
 
             // Implementation power = LOC + cyclomatic complexity * 4
@@ -197,7 +217,11 @@ impl DeepAnalyzer {
             });
         }
 
-        scores.sort_by(|a, b| b.depth_ratio.partial_cmp(&a.depth_ratio).unwrap_or(std::cmp::Ordering::Equal));
+        scores.sort_by(|a, b| {
+            b.depth_ratio
+                .partial_cmp(&a.depth_ratio)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         scores
     }
 }

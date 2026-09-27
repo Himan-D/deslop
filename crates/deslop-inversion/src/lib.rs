@@ -6,15 +6,17 @@ pub mod testgen;
 pub use delooper::{DeloopPlan, DelooperEngine, DeloopingStrategy};
 pub use lossless::LosslessRewriter;
 pub use refactor::{RefactorEngine, RefactorResult};
-pub use testgen::{SynthesizedTestSuite, TestGenerator};
+pub use testgen::{
+    GoTestEmitter, PythonTestEmitter, RustTestEmitter, SynthesizedTestSuite, TestEmitter,
+    TestGenerator, TypeScriptTestEmitter,
+};
 
 use deslop_core::{
-    CodebaseStats, DependencyEdge, Severity, SlopFinding, SlopKind, Symbol, SymbolKind,
-    Visibility,
+    CodebaseStats, DependencyEdge, Severity, SlopFinding, SlopKind, Symbol, SymbolKind, Visibility,
 };
 use deslop_detector::SlopDetectorEngine;
 use deslop_graph::SymbolGraph;
-use deslop_llm::LlmClient;
+use deslop_llm::{CompletionProvider, LlmClient};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -54,7 +56,8 @@ impl InversionEngine {
         graph: &SymbolGraph,
         findings: &[SlopFinding],
     ) -> InvertedArchitecture {
-        let slop_score = SlopDetectorEngine::calculate_slop_index(stats.total_lines_of_code, findings);
+        let slop_score =
+            SlopDetectorEngine::calculate_slop_index(stats.total_lines_of_code, findings);
 
         // Group symbols by file / directory module
         let mut module_map: HashMap<String, Vec<&Symbol>> = HashMap::new();
@@ -79,9 +82,7 @@ impl InversionEngine {
             .collect();
 
         let total_lines_saved: usize = findings.iter().map(|f| f.estimated_lines_saved).sum();
-        let projected_loc = stats
-            .total_lines_of_code
-            .saturating_sub(total_lines_saved);
+        let projected_loc = stats.total_lines_of_code.saturating_sub(total_lines_saved);
 
         let abstraction_reduction_pct = if stats.total_symbols > 0 {
             (pruned_symbol_ids.len() as f64 / stats.total_symbols as f64) * 100.0
@@ -122,7 +123,10 @@ impl InversionEngine {
                     ),
                     responsibilities: vec![
                         format!("Exposes {} core operations", retained.len()),
-                        format!("Eliminates {} unnecessary wrappers / dead symbols", pruned.len()),
+                        format!(
+                            "Eliminates {} unnecessary wrappers / dead symbols",
+                            pruned.len()
+                        ),
                     ],
                     retained_symbols: retained,
                     pruned_symbols: pruned,
@@ -132,7 +136,10 @@ impl InversionEngine {
 
         // Core invariants extracted from public APIs
         let mut core_invariants = Vec::new();
-        for sym in symbols.iter().filter(|s| s.visibility == Visibility::Public) {
+        for sym in symbols
+            .iter()
+            .filter(|s| s.visibility == Visibility::Public)
+        {
             if sym.kind == SymbolKind::Function || sym.kind == SymbolKind::Method {
                 core_invariants.push(format!(
                     "Capability `{}`: signature `{}` (LOC: {}, Complexity: {})",
@@ -238,14 +245,17 @@ impl InversionEngine {
         md.push_str(&format!(
             "| **Total Abstractions / Symbols** | {} | {} | **-{:.1}% bloat** |\n",
             stats.total_symbols,
-            stats
-                .total_symbols
-                .saturating_sub((stats.total_symbols as f64 * (abstraction_reduction_pct / 100.0)) as usize),
+            stats.total_symbols.saturating_sub(
+                (stats.total_symbols as f64 * (abstraction_reduction_pct / 100.0)) as usize
+            ),
             abstraction_reduction_pct
         ));
         md.push_str(&format!(
             "| **Critical Architectural Flaws** | {} issues | 0 issues | Clean |\n\n",
-            findings.iter().filter(|f| f.severity == Severity::Critical || f.severity == Severity::High).count()
+            findings
+                .iter()
+                .filter(|f| f.severity == Severity::Critical || f.severity == Severity::High)
+                .count()
         ));
 
         md.push_str("## 2. Inverted Component Architecture\n\n");
@@ -259,8 +269,14 @@ impl InversionEngine {
 
             for (i, p) in deloop_plans.iter().enumerate() {
                 md.push_str(&format!("### Loop #{}: `{}`\n", i + 1, p.cycle.join(" ⇄ ")));
-                md.push_str(&format!("- **Architectural Rationale:** {}\n", p.architectural_rationale));
-                md.push_str(&format!("- **Optimal Cut Edge:** `{} -> {}`\n", p.cut_edge.0, p.cut_edge.1));
+                md.push_str(&format!(
+                    "- **Architectural Rationale:** {}\n",
+                    p.architectural_rationale
+                ));
+                md.push_str(&format!(
+                    "- **Optimal Cut Edge:** `{} -> {}`\n",
+                    p.cut_edge.0, p.cut_edge.1
+                ));
                 md.push_str("- **Actionable Refactoring Steps:**\n");
                 for step in &p.actionable_steps {
                     md.push_str(&format!("  1. {}\n", step));
@@ -278,7 +294,10 @@ impl InversionEngine {
                 md.push_str(&format!("- `{}`\n", r));
             }
             if comp.retained_symbols.len() > 8 {
-                md.push_str(&format!("- *(and {} more)*\n", comp.retained_symbols.len() - 8));
+                md.push_str(&format!(
+                    "- *(and {} more)*\n",
+                    comp.retained_symbols.len() - 8
+                ));
             }
 
             if !comp.pruned_symbols.is_empty() {
@@ -295,7 +314,10 @@ impl InversionEngine {
             md.push_str(&format!("- {}\n", inv));
         }
         if invariants.len() > 15 {
-            md.push_str(&format!("- *(and {} other entrypoints)*\n", invariants.len() - 15));
+            md.push_str(&format!(
+                "- *(and {} other entrypoints)*\n",
+                invariants.len() - 15
+            ));
         }
         md.push('\n');
 

@@ -21,7 +21,11 @@ fn test_deloop_and_inversion_pipeline() {
 
     let graph = SymbolGraph::from_parsed(&parsed.symbols, &parsed.edges);
     let cycles = graph.find_circular_dependencies();
-    assert_eq!(cycles.len(), 1, "Expected exactly 1 circular dependency loop");
+    assert_eq!(
+        cycles.len(),
+        1,
+        "Expected exactly 1 circular dependency loop"
+    );
 
     let deloop_plans = DelooperEngine::compute_deloop_plans(&parsed.symbols, &graph);
     assert_eq!(deloop_plans.len(), 1);
@@ -42,7 +46,9 @@ fn test_deloop_and_inversion_pipeline() {
 
     assert!(inverted.original_loc > inverted.projected_loc);
     assert!(inverted.lines_reduced_estimate > 0);
-    assert!(inverted.spec_markdown.contains("Architectural Inversion Specification"));
+    assert!(inverted
+        .spec_markdown
+        .contains("Architectural Inversion Specification"));
     assert!(inverted.spec_markdown.contains("De-Looping Strategy"));
 }
 
@@ -84,7 +90,7 @@ fn test_rollback_on_failed_verification() {
 
 #[test]
 fn test_capacity_prediction() {
-    use deslop_graph::CapacityAnalyzer;
+    use deslop_graph::{CapacityAnalyzer, GraphAnalyzer};
 
     let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -98,14 +104,24 @@ fn test_capacity_prediction() {
     let graph = SymbolGraph::from_parsed(&parsed.symbols, &parsed.edges);
 
     let report = CapacityAnalyzer::analyze(&graph);
-    assert!(!report.estimates.is_empty(), "Should contain device estimates");
-    assert_eq!(report.estimates.len(), 4, "Should profile 4 standard device tiers");
-    assert!(!report.breaking_risks.is_empty(), "Should detect breaking risks");
+    assert!(
+        !report.estimates.is_empty(),
+        "Should contain device estimates"
+    );
+    assert_eq!(
+        report.estimates.len(),
+        4,
+        "Should profile 4 standard device tiers"
+    );
+    assert!(
+        !report.breaking_risks.is_empty(),
+        "Should detect breaking risks"
+    );
 }
 
 #[test]
 fn test_deep_architecture_analysis() {
-    use deslop_graph::DeepAnalyzer;
+    use deslop_graph::{DeepAnalyzer, GraphAnalyzer};
 
     let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -119,8 +135,14 @@ fn test_deep_architecture_analysis() {
     let graph = SymbolGraph::from_parsed(&parsed.symbols, &parsed.edges);
 
     let report = DeepAnalyzer::analyze(&graph);
-    assert!(!report.module_metrics.is_empty(), "Should compute module metrics");
-    assert!(report.average_depth_ratio > 0.0, "Should compute average depth ratio");
+    assert!(
+        !report.module_metrics.is_empty(),
+        "Should compute module metrics"
+    );
+    assert!(
+        report.average_depth_ratio > 0.0,
+        "Should compute average depth ratio"
+    );
 }
 
 #[test]
@@ -141,7 +163,10 @@ fn test_scip_generation() {
 
     assert_eq!(scip.metadata.version, 1);
     assert_eq!(scip.metadata.tool_info.name, "deslop");
-    assert!(!scip.documents.is_empty(), "SCIP must contain indexed documents");
+    assert!(
+        !scip.documents.is_empty(),
+        "SCIP must contain indexed documents"
+    );
 
     // Check occurrences and symbols
     let total_symbols: usize = scip.documents.iter().map(|d| d.symbols.len()).sum();
@@ -183,12 +208,21 @@ fn test_incremental_cache() {
 
     // Verify cache was saved
     let cache_file = temp_dir.join(".deslop/cache.json");
-    assert!(cache_file.exists(), "Cache file .deslop/cache.json should exist");
+    assert!(
+        cache_file.exists(),
+        "Cache file .deslop/cache.json should exist"
+    );
 
     // Second scan using the cached files
     let cached_parsed = scanner.scan_cached(&temp_dir, true).unwrap();
-    assert_eq!(initial_parsed.stats.total_files, cached_parsed.stats.total_files);
-    assert_eq!(initial_parsed.stats.total_symbols, cached_parsed.stats.total_symbols);
+    assert_eq!(
+        initial_parsed.stats.total_files,
+        cached_parsed.stats.total_files
+    );
+    assert_eq!(
+        initial_parsed.stats.total_symbols,
+        cached_parsed.stats.total_symbols
+    );
 
     // Clean up
     let _ = fs::remove_dir_all(&temp_dir);
@@ -209,7 +243,10 @@ fn test_characterization_testgen() {
     let parsed = scanner.scan(&fixture_dir).unwrap();
 
     let suites = TestGenerator::generate_all(&parsed.symbols);
-    assert!(!suites.is_empty(), "Should generate characterization test suites");
+    assert!(
+        !suites.is_empty(),
+        "Should generate characterization test suites"
+    );
 
     let first = &suites[0];
     assert!(!first.test_code.is_empty());
@@ -249,19 +286,32 @@ fn test_trace_ingestion_and_dynamic_rescue() {
     let report = TraceIngestionEngine::correlate_traces(&graph, &spans);
     assert_eq!(report.total_spans_ingested, 2);
     assert_eq!(report.active_runtime_symbols, 1);
-    assert!(!report.dynamic_entrypoints_rescued.is_empty(), "Should rescue dynamic entrypoint from false-positive dead code detection");
-    assert_eq!(report.dynamic_entrypoints_rescued[0].symbol_name, "calculate_regular_discount");
+    assert!(
+        !report.dynamic_entrypoints_rescued.is_empty(),
+        "Should rescue dynamic entrypoint from false-positive dead code detection"
+    );
+    assert_eq!(
+        report.dynamic_entrypoints_rescued[0].symbol_name,
+        "calculate_regular_discount"
+    );
 }
 
 #[test]
 fn test_architectural_layer_rules() {
-    use deslop_core::{ArchitectureConfig, DependencyEdge, DependencyEdgeKind, ForbiddenRule, Severity, SlopKind, Symbol, SymbolKind, Visibility};
+    use deslop_core::{
+        ArchitectureConfig, DependencyEdge, DependencyEdgeKind, ForbiddenRule, Severity, SlopKind,
+        Symbol, SymbolKind, Visibility,
+    };
     use deslop_detector::SlopDetectorEngine;
     use deslop_graph::SymbolGraph;
     use std::path::PathBuf;
 
     let config = ArchitectureConfig {
-        layers: vec!["controller".to_string(), "service".to_string(), "repo".to_string()],
+        layers: vec![
+            "controller".to_string(),
+            "service".to_string(),
+            "repo".to_string(),
+        ],
         forbidden_rules: vec![ForbiddenRule {
             from: "repo".to_string(),
             to: "controller".to_string(),
@@ -282,6 +332,8 @@ fn test_architectural_layer_rules() {
         signature: "fn fetch()".to_string(),
         is_pure_hint: false,
         ast_hash: None,
+        attributes: Vec::new(),
+        is_trait_impl: false,
     };
     let s2 = Symbol {
         id: "controller::handle".to_string(),
@@ -296,6 +348,8 @@ fn test_architectural_layer_rules() {
         signature: "fn handle()".to_string(),
         is_pure_hint: false,
         ast_hash: None,
+        attributes: Vec::new(),
+        is_trait_impl: false,
     };
 
     let edge = DependencyEdge {
@@ -310,8 +364,14 @@ fn test_architectural_layer_rules() {
     let graph = SymbolGraph::from_parsed(&symbols, &edges);
 
     let findings = SlopDetectorEngine::analyze_with_config(&symbols, &edges, &graph, Some(&config));
-    let layer_violations: Vec<_> = findings.iter().filter(|f| f.kind == SlopKind::LayerViolation).collect();
-    assert!(!layer_violations.is_empty(), "Should detect architectural layer violation");
+    let layer_violations: Vec<_> = findings
+        .iter()
+        .filter(|f| f.kind == SlopKind::LayerViolation)
+        .collect();
+    assert!(
+        !layer_violations.is_empty(),
+        "Should detect architectural layer violation"
+    );
     assert_eq!(layer_violations[0].severity, Severity::Critical);
 }
 
@@ -327,9 +387,15 @@ fn test_git_churn_analysis() {
         .unwrap();
 
     let report_opt = GitChurnAnalyzer::analyze(repo_root, 50);
-    assert!(report_opt.is_some(), "GitChurnAnalyzer should successfully analyze the deslop git repository");
+    assert!(
+        report_opt.is_some(),
+        "GitChurnAnalyzer should successfully analyze the deslop git repository"
+    );
     let report = report_opt.unwrap();
-    assert!(report.total_commits_analyzed > 0, "Should have analyzed at least 1 commit");
+    assert!(
+        report.total_commits_analyzed > 0,
+        "Should have analyzed at least 1 commit"
+    );
 }
 
 #[test]
@@ -356,9 +422,9 @@ fn test_lossless_trivia_preservation() {
     };
 
     let (start_idx, end_idx) = LosslessRewriter::compute_symbol_pruning_bounds(&lines, &span);
-    assert_eq!(start_idx, 1, "Should absorb attached doc comment and attribute");
+    assert_eq!(
+        start_idx, 1,
+        "Should absorb attached doc comment and attribute"
+    );
     assert_eq!(end_idx, 6);
 }
-
-
-

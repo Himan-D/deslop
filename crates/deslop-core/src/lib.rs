@@ -79,6 +79,77 @@ pub struct Symbol {
     pub signature: String,
     pub is_pure_hint: bool,
     pub ast_hash: Option<String>,
+    /// Attribute paths attached to this symbol (e.g. `test`, `derive`, `inline`).
+    /// Used to recognize test entrypoints and generated code.
+    #[serde(default)]
+    pub attributes: Vec<String>,
+    /// True when this method comes from `impl Trait for Type` rather than an
+    /// inherent impl block. Such methods are dispatched through the trait and
+    /// must be treated as reachable entrypoints.
+    #[serde(default)]
+    pub is_trait_impl: bool,
+}
+
+impl Symbol {
+    /// True for any test code: test entrypoints plus helpers living under
+    /// `#[cfg(test)]` (e.g. inside `mod tests`). Used by rules that should
+    /// ignore test scaffolding (tollbooth, clones). Dead-code detection still
+    /// applies to helpers, so unreachable test helpers are flagged.
+    pub fn is_test_code(&self) -> bool {
+        self.is_test_entrypoint() || self.attributes.iter().any(|a| a == "cfg(test)")
+    }
+
+    /// Returns true if this symbol is a test entrypoint: `#[test]`-attributed,
+    /// named `test_*`, or living under a `tests/` directory / `test_*` file.
+    pub fn is_test_entrypoint(&self) -> bool {
+        if self.attributes.iter().any(|a| a == "test") {
+            return true;
+        }
+        if self.name.starts_with("test_") || self.name.contains("::test_") {
+            return true;
+        }
+        if self
+            .file_path
+            .components()
+            .any(|c| c.as_os_str() == "tests" || c.as_os_str() == "__tests__")
+        {
+            return true;
+        }
+        self.file_path
+            .file_stem()
+            .map(|s| {
+                let stem = s.to_string_lossy();
+                stem.starts_with("test_") || stem.ends_with("_test")
+            })
+            .unwrap_or(false)
+    }
+}
+
+/// Uniform source location for anything reportable (symbols, findings).
+/// Lets CLI, MCP, and LSP share one location formatter instead of
+/// each reaching into different structs.
+pub trait DiagnosticLocation {
+    fn file_path(&self) -> &std::path::Path;
+    fn line(&self) -> usize;
+}
+
+impl DiagnosticLocation for Symbol {
+    fn file_path(&self) -> &std::path::Path {
+        &self.file_path
+    }
+    fn line(&self) -> usize {
+        self.span.start_line
+    }
+}
+
+/// Short `file:line` label shared by all reporters.
+pub fn format_location<T: DiagnosticLocation + ?Sized>(item: &T) -> String {
+    let file = item
+        .file_path()
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| item.file_path().to_string_lossy().to_string());
+    format!("{}:{}", file, item.line())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -164,6 +235,15 @@ pub struct SlopFinding {
     pub estimated_lines_saved: usize,
 }
 
+impl DiagnosticLocation for SlopFinding {
+    fn file_path(&self) -> &std::path::Path {
+        &self.file_path
+    }
+    fn line(&self) -> usize {
+        self.line
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CodebaseStats {
     pub total_files: usize,
@@ -177,10 +257,10 @@ pub struct ModuleMetrics {
     pub module_name: String,
     pub afferent_coupling: usize, // Ca: incoming dependencies from other modules
     pub efferent_coupling: usize, // Ce: outgoing dependencies to other modules
-    pub instability: f64,         // I = Ce / (Ca + Ce) [0.0 = completely stable, 1.0 = completely unstable]
-    pub abstractness: f64,        // A = abstract symbols / total symbols
+    pub instability: f64, // I = Ce / (Ca + Ce) [0.0 = completely stable, 1.0 = completely unstable]
+    pub abstractness: f64, // A = abstract symbols / total symbols
     pub distance_from_main_seq: f64, // D = |A + I - 1| [0.0 = optimal balance, 1.0 = extreme pain or uselessness]
-    pub classification: String,   // "Main Sequence", "Zone of Pain", "Zone of Uselessness"
+    pub classification: String,      // "Main Sequence", "Zone of Pain", "Zone of Uselessness"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,3 +290,47 @@ pub struct DeepArchitectureReport {
     pub average_depth_ratio: f64,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_symbol(name: &str, file: &str, attrs: Vec<String>) -> Symbol {
+        Symbol {
+            id: format!("{}::{}", file, name),
+            name: name.to_string(),
+            kind: SymbolKind::Function,
+            file_path: PathBuf::from(file),
+            span: SourceSpan::new(1, 1, 5, 2),
+            visibility: Visibility::Private,
+            loc: 5,
+            cyclomatic_complexity: 1,
+            doc: None,
+            signature: format!("fn {}", name),
+            is_pure_hint: false,
+            ast_hash: None,
+            attributes: attrs,
+            is_trait_impl: false,
+        }
+    }
+
+    #[test]
+    fn test_entrypoint_heuristics() {
+        // #[test] attribute wins regardless of name or location.
+        assert!(test_symbol("parses", "lib.rs", vec!["test".to_string()]).is_test_entrypoint());
+        // test_* naming.
+        assert!(test_symbol("test_parse", "lib.rs", vec![]).is_test_entrypoint());
+        // tests/ directory and test file stems.
+        assert!(test_symbol("helper", "tests/integration.rs", vec![]).is_test_entrypoint());
+        assert!(test_symbol("helper", "src/parser_test.rs", vec![]).is_test_entrypoint());
+        // Ordinary private helpers are not tests.
+        assert!(!test_symbol("helper", "src/lib.rs", vec![]).is_test_entrypoint());
+        // `TestGenerator` contains "Test" but matches no test rule.
+        assert!(!test_symbol("TestGenerator::emit", "testgen.rs", vec![]).is_test_entrypoint());
+    }
+
+    #[test]
+    fn format_location_uses_file_stem_and_line() {
+        let sym = test_symbol("run", "src/main.rs", vec![]);
+        assert_eq!(format_location(&sym), "main.rs:1");
+    }
+}

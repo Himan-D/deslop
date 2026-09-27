@@ -12,13 +12,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo Dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -34,10 +34,10 @@ jobs:
       - name: Run Test Suite
         run: cargo test --workspace
 
-      # Threshold set at 50 (current score: ~36.2 on crates/). Tighten as debt is paid down.
+      # Threshold set at 10 (current score: ~1.0 on crates/ after resolver fixes).
       # Scans crates/ only — tests/fixtures intentionally contains cyclic code for test coverage.
-      - name: Run Deslop Quality Gate (Max Slop 50)
-        run: ./target/release/deslop check crates/ --max-slop 50.0
+      - name: Run Deslop Quality Gate (Max Slop 10)
+        run: ./target/release/deslop check crates/ --max-slop 10.0
 
       - name: Git Churn & Temporal Coupling Analysis
         run: ./target/release/deslop churn . --commits 100

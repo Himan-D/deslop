@@ -1,6 +1,5 @@
 use crate::cache::{CachedFileEntry, CodebaseCache};
-use crate::rust_parser::parse_rust_file;
-use crate::universal_parser::parse_universal_file;
+use crate::{FileParser, RustParser, UniversalParser};
 use deslop_core::{CodebaseStats, DependencyEdge, Language, Symbol};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -50,7 +49,11 @@ impl CodebaseScanner {
         self.scan_cached(root, false)
     }
 
-    pub fn scan_cached<P: AsRef<Path>>(&self, root: P, use_cache: bool) -> anyhow::Result<ParsedCodebase> {
+    pub fn scan_cached<P: AsRef<Path>>(
+        &self,
+        root: P,
+        use_cache: bool,
+    ) -> anyhow::Result<ParsedCodebase> {
         let root_path = root.as_ref().to_path_buf();
 
         // Phase 1: Fast directory walk to collect candidate files
@@ -107,10 +110,11 @@ impl CodebaseScanner {
                 let file_loc = content_str.lines().count();
 
                 let (symbols, edges) = match lang {
-                    Language::Rust => parse_rust_file(path, &content_str).unwrap_or_default(),
-                    Language::TypeScript | Language::JavaScript | Language::Python | Language::Go => {
-                        parse_universal_file(path, &content_str, *lang)
-                    }
+                    Language::Rust => RustParser.parse(path, &content_str),
+                    Language::TypeScript
+                    | Language::JavaScript
+                    | Language::Python
+                    | Language::Go => UniversalParser::new(*lang).parse(path, &content_str),
                     Language::Unknown => (Vec::new(), Vec::new()),
                 };
 

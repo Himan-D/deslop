@@ -5,6 +5,22 @@ use deslop_core::{
 use deslop_graph::SymbolGraph;
 use std::collections::HashMap;
 
+/// Read-only input shared by every detection rule.
+pub struct DetectionContext<'a> {
+    pub symbols: &'a [Symbol],
+    pub edges: &'a [DependencyEdge],
+    pub graph: &'a SymbolGraph,
+    pub config: Option<&'a ArchitectureConfig>,
+}
+
+/// One architectural anti-pattern detector. Each rule is an independent unit
+/// struct so rules can be tested, mocked, or swapped individually instead of
+/// going through the monolithic engine.
+pub trait DetectionRule {
+    fn rule_name(&self) -> &'static str;
+    fn detect(&self, ctx: &DetectionContext) -> Vec<SlopFinding>;
+}
+
 pub struct SlopDetectorEngine;
 
 impl SlopDetectorEngine {
@@ -22,49 +38,77 @@ impl SlopDetectorEngine {
         graph: &SymbolGraph,
         config: Option<&ArchitectureConfig>,
     ) -> Vec<SlopFinding> {
+        let ctx = DetectionContext {
+            symbols,
+            edges,
+            graph,
+            config,
+        };
         let mut findings = Vec::new();
-
-        // 1. Ghost Abstraction Detector
-        findings.extend(Self::detect_ghost_abstractions(symbols, edges));
-
-        // 2. Tollbooth Wrapper Detector
-        findings.extend(Self::detect_tollbooth_wrappers(symbols, edges));
-
-        // 3. Structural Clone Detector
-        findings.extend(Self::detect_structural_clones(symbols));
-
-        // 4. Dead Orphan Code Detector
-        findings.extend(Self::detect_dead_orphans(graph));
-
-        // 5. Circular Dependency Detector
-        findings.extend(Self::detect_circular_dependencies(symbols, graph));
-
-        // 6. God Object Detector
-        findings.extend(Self::detect_god_objects(symbols, graph));
-
-        // 7. Architectural Layer & Forbidden Boundary Detector
-        if let Some(cfg) = config {
-            findings.extend(Self::detect_architecture_violations(symbols, edges, cfg));
+        for rule in Self::default_rules() {
+            findings.extend(rule.detect(&ctx));
         }
-
         findings.sort_by_key(|b| std::cmp::Reverse(b.severity));
         findings
     }
 
-    /// Evaluates ArchUnit-style declarative architectural rules and forbidden dependencies
-    fn detect_architecture_violations(
-        symbols: &[Symbol],
-        edges: &[DependencyEdge],
-        config: &ArchitectureConfig,
-    ) -> Vec<SlopFinding> {
+    /// The built-in rule set, in deterministic evaluation order.
+    pub fn default_rules() -> Vec<Box<dyn DetectionRule>> {
+        vec![
+            Box::new(GhostAbstractionRule),
+            Box::new(TollboothWrapperRule),
+            Box::new(StructuralCloneRule),
+            Box::new(DeadOrphanRule),
+            Box::new(CircularDependencyRule),
+            Box::new(GodObjectRule),
+            Box::new(ArchitectureViolationRule),
+        ]
+    }
+
+    /// Calculate the overall Slop Index (0.0 = pristine, 100.0 = catastrophic slop)
+    pub fn calculate_slop_index(total_loc: usize, findings: &[SlopFinding]) -> f64 {
+        if total_loc == 0 {
+            return 0.0;
+        }
+
+        let mut penalty = 0.0;
+        for f in findings {
+            let weight = match f.severity {
+                Severity::Low => 1.5,
+                Severity::Medium => 4.0,
+                Severity::High => 8.0,
+                Severity::Critical => 15.0,
+            };
+            penalty += weight;
+        }
+
+        // Normalize per 1,000 lines of code
+        let normalized = (penalty / (total_loc as f64 / 1000.0)).clamp(0.0, 100.0);
+        (normalized * 10.0).round() / 10.0
+    }
+}
+
+/// Evaluates ArchUnit-style declarative architectural rules and forbidden dependencies
+pub struct ArchitectureViolationRule;
+
+impl DetectionRule for ArchitectureViolationRule {
+    fn rule_name(&self) -> &'static str {
+        "architecture-violation"
+    }
+
+    fn detect(&self, ctx: &DetectionContext) -> Vec<SlopFinding> {
+        let Some(config) = ctx.config else {
+            return Vec::new();
+        };
         let mut findings = Vec::new();
 
-        let sym_files: HashMap<&str, (&std::path::Path, usize)> = symbols
+        let sym_files: HashMap<&str, (&std::path::Path, usize)> = ctx
+            .symbols
             .iter()
             .map(|s| (s.id.as_str(), (s.file_path.as_path(), s.span.start_line)))
             .collect();
 
-        for edge in edges {
+        for edge in ctx.edges {
             let from_path = sym_files
                 .get(edge.from_symbol.as_str())
                 .map(|(p, _)| p.to_string_lossy())
@@ -125,22 +169,27 @@ impl SlopDetectorEngine {
 
         findings
     }
+}
 
-    /// Detect interfaces/traits with exactly 1 implementation
-    fn detect_ghost_abstractions(
-        symbols: &[Symbol],
-        edges: &[DependencyEdge],
-    ) -> Vec<SlopFinding> {
+/// Detect interfaces/traits with exactly 1 implementation
+pub struct GhostAbstractionRule;
+
+impl DetectionRule for GhostAbstractionRule {
+    fn rule_name(&self) -> &'static str {
+        "ghost-abstraction"
+    }
+
+    fn detect(&self, ctx: &DetectionContext) -> Vec<SlopFinding> {
         let mut findings = Vec::new();
         let mut impl_counts: HashMap<&str, usize> = HashMap::new();
 
-        for edge in edges {
+        for edge in ctx.edges {
             if edge.kind == DependencyEdgeKind::Implements {
                 *impl_counts.entry(&edge.to_symbol).or_insert(0) += 1;
             }
         }
 
-        for sym in symbols {
+        for sym in ctx.symbols {
             if (sym.kind == SymbolKind::Interface || sym.kind == SymbolKind::Trait)
                 && sym.visibility != Visibility::Public
             {
@@ -170,16 +219,21 @@ impl SlopDetectorEngine {
 
         findings
     }
+}
 
-    /// Detect wrapper functions that do nothing except forward calls
-    fn detect_tollbooth_wrappers(
-        symbols: &[Symbol],
-        edges: &[DependencyEdge],
-    ) -> Vec<SlopFinding> {
+/// Detect wrapper functions that do nothing except forward calls
+pub struct TollboothWrapperRule;
+
+impl DetectionRule for TollboothWrapperRule {
+    fn rule_name(&self) -> &'static str {
+        "tollbooth-wrapper"
+    }
+
+    fn detect(&self, ctx: &DetectionContext) -> Vec<SlopFinding> {
         let mut findings = Vec::new();
         let mut outgoing_calls: HashMap<&str, Vec<&str>> = HashMap::new();
 
-        for edge in edges {
+        for edge in ctx.edges {
             if edge.kind == DependencyEdgeKind::Calls {
                 outgoing_calls
                     .entry(&edge.from_symbol)
@@ -188,8 +242,19 @@ impl SlopDetectorEngine {
             }
         }
 
-        for sym in symbols {
+        for sym in ctx.symbols {
             if sym.name == "main" || sym.name.ends_with("::main") || sym.name.starts_with("test_") {
+                continue;
+            }
+            // Trait-impl methods fulfill a contract (e.g. `Default::default`
+            // delegating to `new`); they cannot be inlined away.
+            if sym.is_trait_impl {
+                continue;
+            }
+            // Tests are roots, never wrappers: a test that exercises one
+            // function is doing its job, not adding indirection. Test
+            // scaffolding is likewise not production indirection.
+            if sym.is_test_code() {
                 continue;
             }
 
@@ -225,13 +290,26 @@ impl SlopDetectorEngine {
 
         findings
     }
+}
 
-    /// Detect duplicated AST structures across functions
-    fn detect_structural_clones(symbols: &[Symbol]) -> Vec<SlopFinding> {
+/// Detect duplicated AST structures across functions
+pub struct StructuralCloneRule;
+
+impl DetectionRule for StructuralCloneRule {
+    fn rule_name(&self) -> &'static str {
+        "structural-clone"
+    }
+
+    fn detect(&self, ctx: &DetectionContext) -> Vec<SlopFinding> {
         let mut findings = Vec::new();
         let mut hash_map: HashMap<&str, Vec<&Symbol>> = HashMap::new();
 
-        for sym in symbols {
+        for sym in ctx.symbols {
+            // Test scaffolding favors independence over DRY; duplicated test
+            // helpers are not production clones.
+            if sym.is_test_code() {
+                continue;
+            }
             if let Some(h) = &sym.ast_hash {
                 if sym.loc >= 5 {
                     hash_map.entry(h.as_str()).or_default().push(sym);
@@ -250,7 +328,10 @@ impl SlopDetectorEngine {
                         line: duplicate.span.start_line,
                         severity: Severity::High,
                         confidence: 0.95,
-                        title: format!("Structural Clone: `{}` matches `{}`", duplicate.name, primary.name),
+                        title: format!(
+                            "Structural Clone: `{}` matches `{}`",
+                            duplicate.name, primary.name
+                        ),
                         description: format!(
                             "`{}` shares identical AST logic with `{}` in {}:{}",
                             duplicate.name,
@@ -258,7 +339,9 @@ impl SlopDetectorEngine {
                             primary.file_path.display(),
                             primary.span.start_line
                         ),
-                        remediation: "Parameterize the shared logic into a single reusable helper function.".to_string(),
+                        remediation:
+                            "Parameterize the shared logic into a single reusable helper function."
+                                .to_string(),
                         estimated_lines_saved: duplicate.loc,
                     });
                 }
@@ -267,10 +350,18 @@ impl SlopDetectorEngine {
 
         findings
     }
+}
 
-    /// Detect unreachable dead code
-    fn detect_dead_orphans(graph: &SymbolGraph) -> Vec<SlopFinding> {
-        let orphans = graph.find_unreachable_orphans();
+/// Detect unreachable dead code
+pub struct DeadOrphanRule;
+
+impl DetectionRule for DeadOrphanRule {
+    fn rule_name(&self) -> &'static str {
+        "dead-orphan"
+    }
+
+    fn detect(&self, ctx: &DetectionContext) -> Vec<SlopFinding> {
+        let orphans = ctx.graph.find_unreachable_orphans();
         orphans
             .into_iter()
             .map(|sym| SlopFinding {
@@ -290,14 +381,20 @@ impl SlopDetectorEngine {
             })
             .collect()
     }
+}
 
-    /// Detect circular dependency cycles
-    fn detect_circular_dependencies(
-        symbols: &[Symbol],
-        graph: &SymbolGraph,
-    ) -> Vec<SlopFinding> {
-        let cycles = graph.find_circular_dependencies();
-        let sym_map: HashMap<&str, &Symbol> = symbols.iter().map(|s| (s.name.as_str(), s)).collect();
+/// Detect circular dependency cycles
+pub struct CircularDependencyRule;
+
+impl DetectionRule for CircularDependencyRule {
+    fn rule_name(&self) -> &'static str {
+        "circular-dependency"
+    }
+
+    fn detect(&self, ctx: &DetectionContext) -> Vec<SlopFinding> {
+        let cycles = ctx.graph.find_circular_dependencies();
+        let sym_map: HashMap<&str, &Symbol> =
+            ctx.symbols.iter().map(|s| (s.name.as_str(), s)).collect();
         let mut findings = Vec::new();
 
         for cycle in cycles {
@@ -325,17 +422,36 @@ impl SlopDetectorEngine {
 
         findings
     }
+}
 
-    /// Detect God Objects (excessive fan-in + fan-out + loc)
-    fn detect_god_objects(
-        symbols: &[Symbol],
-        graph: &SymbolGraph,
-    ) -> Vec<SlopFinding> {
-        let degrees = graph.compute_degrees();
+/// Detect God Objects (excessive fan-in + fan-out + loc)
+pub struct GodObjectRule;
+
+impl DetectionRule for GodObjectRule {
+    fn rule_name(&self) -> &'static str {
+        "god-object"
+    }
+
+    fn detect(&self, ctx: &DetectionContext) -> Vec<SlopFinding> {
+        let degrees = ctx.graph.compute_degrees();
         let mut findings = Vec::new();
 
-        for sym in symbols {
+        for sym in ctx.symbols {
             if sym.kind == SymbolKind::Struct || sym.kind == SymbolKind::Class {
+                // Widely referenced data with (almost) no behavior is a shared
+                // domain type, not a god object. Require real behavior or size.
+                let method_count = ctx
+                    .symbols
+                    .iter()
+                    .filter(|s| {
+                        s.kind == SymbolKind::Method
+                            && !s.is_trait_impl
+                            && s.name.starts_with(&format!("{}::", sym.name))
+                    })
+                    .count();
+                if method_count < 3 && sym.loc <= 100 {
+                    continue;
+                }
                 if let Some((in_deg, out_deg)) = degrees.get(&sym.id) {
                     if *in_deg + *out_deg > 15 || sym.loc > 300 {
                         findings.push(SlopFinding {
@@ -360,26 +476,125 @@ impl SlopDetectorEngine {
 
         findings
     }
+}
 
-    /// Calculate the overall Slop Index (0.0 = pristine, 100.0 = catastrophic slop)
-    pub fn calculate_slop_index(total_loc: usize, findings: &[SlopFinding]) -> f64 {
-        if total_loc == 0 {
-            return 0.0;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deslop_core::SourceSpan;
+    use std::path::PathBuf;
+
+    fn sym(id: &str, name: &str, kind: SymbolKind, loc: usize) -> Symbol {
+        Symbol {
+            id: id.to_string(),
+            name: name.to_string(),
+            kind,
+            file_path: PathBuf::from("lib.rs"),
+            span: SourceSpan::new(1, 1, loc, 2),
+            visibility: Visibility::Private,
+            loc,
+            cyclomatic_complexity: 1,
+            doc: None,
+            signature: format!("fn {}", name),
+            is_pure_hint: false,
+            ast_hash: None,
+            attributes: Vec::new(),
+            is_trait_impl: false,
         }
+    }
 
-        let mut penalty = 0.0;
-        for f in findings {
-            let weight = match f.severity {
-                Severity::Low => 1.5,
-                Severity::Medium => 4.0,
-                Severity::High => 8.0,
-                Severity::Critical => 15.0,
-            };
-            penalty += weight;
+    fn edge(from: &str, to: &str) -> DependencyEdge {
+        DependencyEdge {
+            from_symbol: from.to_string(),
+            to_symbol: to.to_string(),
+            kind: DependencyEdgeKind::Calls,
+            count: 1,
         }
+    }
 
-        // Normalize per 1,000 lines of code
-        let normalized = (penalty / (total_loc as f64 / 1000.0)).clamp(0.0, 100.0);
-        (normalized * 10.0).round() / 10.0
+    #[test]
+    fn default_rules_covers_all_seven_detectors() {
+        let rules = SlopDetectorEngine::default_rules();
+        assert_eq!(rules.len(), 7);
+        let mut names: Vec<&str> = rules.iter().map(|r| r.rule_name()).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), 7);
+    }
+
+    #[test]
+    fn tollbooth_rule_skips_trait_impl_methods() {
+        let mut trait_wrapper = sym(
+            "lib.rs::Cache::default",
+            "Cache::default",
+            SymbolKind::Method,
+            3,
+        );
+        trait_wrapper.is_trait_impl = true;
+        let plain_wrapper = sym("lib.rs::scan", "scan", SymbolKind::Function, 3);
+        let target = sym(
+            "lib.rs::scan_cached",
+            "scan_cached",
+            SymbolKind::Function,
+            30,
+        );
+        let symbols = vec![trait_wrapper, plain_wrapper, target];
+        let edges = vec![
+            edge("lib.rs::Cache::default", "new"),
+            edge("lib.rs::scan", "scan_cached"),
+        ];
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = DetectionContext {
+            symbols: &symbols,
+            edges: &edges,
+            graph: &graph,
+            config: None,
+        };
+        let findings = TollboothWrapperRule.detect(&ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].symbol_id, "lib.rs::scan");
+    }
+
+    #[test]
+    fn god_object_rule_skips_small_behaviorless_data() {
+        let mut symbols = vec![sym("lib.rs::Symbol", "Symbol", SymbolKind::Struct, 26)];
+        let mut edges = Vec::new();
+        for i in 0..16 {
+            symbols.push(sym(
+                &format!("lib.rs::user{}", i),
+                &format!("user{}", i),
+                SymbolKind::Function,
+                10,
+            ));
+            edges.push(edge(&format!("lib.rs::user{}", i), "Symbol"));
+        }
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = DetectionContext {
+            symbols: &symbols,
+            edges: &edges,
+            graph: &graph,
+            config: None,
+        };
+        // 16 incoming edges but no behavior: shared data, not a god object.
+        assert!(GodObjectRule.detect(&ctx).is_empty());
+
+        // Same coupling plus real behavior: flag it.
+        let mut with_behavior = symbols.clone();
+        for i in 0..3 {
+            with_behavior.push(sym(
+                &format!("lib.rs::Symbol::m{}", i),
+                &format!("Symbol::m{}", i),
+                SymbolKind::Method,
+                10,
+            ));
+        }
+        let graph = SymbolGraph::from_parsed(&with_behavior, &edges);
+        let ctx = DetectionContext {
+            symbols: &with_behavior,
+            edges: &edges,
+            graph: &graph,
+            config: None,
+        };
+        assert_eq!(GodObjectRule.detect(&ctx).len(), 1);
     }
 }

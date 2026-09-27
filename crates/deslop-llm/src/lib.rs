@@ -11,6 +11,14 @@ pub enum LlmProvider {
     Offline,
 }
 
+/// Abstraction over text-completion backends. `LlmClient` implements this for
+/// cloud providers; tests and offline paths can substitute a stub without
+/// touching call sites.
+pub trait CompletionProvider {
+    fn provider_name(&self) -> &'static str;
+    fn complete(&self, system_prompt: &str, user_prompt: &str) -> anyhow::Result<String>;
+}
+
 pub struct LlmClient {
     pub provider: LlmProvider,
     pub api_key: Option<String>,
@@ -78,11 +86,71 @@ impl LlmClient {
         }
     }
 
+    pub fn is_offline(&self) -> bool {
+        self.provider == LlmProvider::Offline
+    }
+
+    /// Explains one finding with actionable narrative. Uses the configured LLM
+    /// when online; otherwise renders a deterministic explanation from the
+    /// finding itself so the output is always useful, never a mode notice.
+    pub fn explain(&self, title: &str, description: &str, remediation: &str) -> String {
+        if self.is_offline() {
+            return offline_explanation(title, description, remediation);
+        }
+        let system = "You are a principal software engineer. Explain the architectural finding below in 3-5 sentences: why it hurts maintainability, then concrete fix steps. Be specific, no preamble.";
+        let user = format!(
+            "Finding: {}\nProblem: {}\nSuggested fix: {}",
+            title, description, remediation
+        );
+        match self.complete(system, &user) {
+            Ok(text) => text,
+            Err(e) => {
+                // API errors can dump full JSON bodies; keep one short line.
+                let short = e
+                    .to_string()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let short: String = short.chars().take(160).collect();
+                format!(
+                    "{}\n\n(LLM request via {} failed: {}. Showing deterministic guidance.)",
+                    offline_explanation(title, description, remediation),
+                    self.provider_name(),
+                    short
+                )
+            }
+        }
+    }
+}
+
+/// Deterministic fallback: structured guidance derived from the finding.
+fn offline_explanation(title: &str, description: &str, remediation: &str) -> String {
+    format!(
+        "{}\nProblem: {}\nRecommended fix: {}\nTip: set GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY for AI-synthesized rationale.",
+        title, description, remediation
+    )
+}
+
+impl CompletionProvider for LlmClient {
+    fn provider_name(&self) -> &'static str {
+        match self.provider {
+            LlmProvider::Gemini => "Gemini",
+            LlmProvider::OpenAI => "OpenAI",
+            LlmProvider::Anthropic => "Anthropic",
+            LlmProvider::OpenRouter => "OpenRouter",
+            LlmProvider::Offline => "Offline",
+        }
+    }
+
     /// Queries the LLM with a targeted prompt, or returns deterministic guidance if offline
-    pub fn complete(&self, system_prompt: &str, user_prompt: &str) -> anyhow::Result<String> {
+    fn complete(&self, system_prompt: &str, user_prompt: &str) -> anyhow::Result<String> {
         let key = match &self.api_key {
             Some(k) if self.provider != LlmProvider::Offline => k,
-            _ => return Ok("Running in Offline Deterministic Mode (no API key detected).".to_string()),
+            _ => {
+                return Ok(
+                    "Running in Offline Deterministic Mode (no API key detected).".to_string(),
+                )
+            }
         };
 
         match self.provider {
@@ -190,5 +258,47 @@ impl LlmClient {
             }
             LlmProvider::Offline => Ok("Offline deterministic mode.".to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn offline_client() -> LlmClient {
+        LlmClient {
+            provider: LlmProvider::Offline,
+            api_key: None,
+            model: "offline-deterministic".to_string(),
+            http_client: reqwest::blocking::Client::new(),
+        }
+    }
+
+    #[test]
+    fn provider_names_cover_all_backends() {
+        let mut client = offline_client();
+        assert_eq!(client.provider_name(), "Offline");
+        client.provider = LlmProvider::Gemini;
+        assert_eq!(client.provider_name(), "Gemini");
+    }
+
+    #[test]
+    fn offline_explain_is_actionable_not_a_mode_notice() {
+        let client = offline_client();
+        let text = client.explain(
+            "Tollbooth Wrapper: `scan`",
+            "thin pass-through",
+            "inline it",
+        );
+        assert!(text.contains("Tollbooth Wrapper: `scan`"));
+        assert!(text.contains("thin pass-through"));
+        assert!(text.contains("inline it"));
+    }
+
+    #[test]
+    fn offline_complete_stays_deterministic() {
+        let client = offline_client();
+        let out = client.complete("sys", "user").expect("offline complete");
+        assert!(!out.is_empty());
     }
 }

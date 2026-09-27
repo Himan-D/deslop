@@ -11,7 +11,11 @@ pub fn parse_universal_file(
     lang: Language,
 ) -> (Vec<Symbol>, Vec<DependencyEdge>) {
     let mut parser = Parser::new();
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
 
     let ts_lang = match lang {
         Language::Python => Some(tree_sitter_python::LANGUAGE.into()),
@@ -116,7 +120,11 @@ fn extract_calls_in_node(
                 } else {
                     callee
                 };
-                if !clean_callee.is_empty() && clean_callee.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                if !clean_callee.is_empty()
+                    && clean_callee
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_')
+                {
                     edges.push(DependencyEdge {
                         from_symbol: from_symbol.to_string(),
                         to_symbol: clean_callee.to_string(),
@@ -160,8 +168,12 @@ fn extract_python_nodes(
                     let loc = (end_point.row.saturating_sub(start_point.row)) + 1;
 
                     let complexity_triggers = &[
-                        "if_statement", "for_statement", "while_statement",
-                        "try_statement", "except_clause", "conditional_expression",
+                        "if_statement",
+                        "for_statement",
+                        "while_statement",
+                        "try_statement",
+                        "except_clause",
+                        "conditional_expression",
                     ];
                     let cyclomatic = 1 + count_complexity(child, complexity_triggers);
 
@@ -182,16 +194,28 @@ fn extract_python_nodes(
                     symbols.push(Symbol {
                         id: symbol_id.clone(),
                         name: qualified_name,
-                        kind: if current_class.is_some() { SymbolKind::Method } else { SymbolKind::Function },
+                        kind: if current_class.is_some() {
+                            SymbolKind::Method
+                        } else {
+                            SymbolKind::Function
+                        },
                         file_path: path.to_path_buf(),
-                        span: SourceSpan::new(start_point.row + 1, start_point.column + 1, end_point.row + 1, end_point.column + 1),
+                        span: SourceSpan::new(
+                            start_point.row + 1,
+                            start_point.column + 1,
+                            end_point.row + 1,
+                            end_point.column + 1,
+                        ),
                         visibility,
                         loc,
                         cyclomatic_complexity: cyclomatic,
                         doc: None,
                         signature: sig_text,
-                        is_pure_hint: !body_text.contains("global ") && !body_text.contains("self."),
+                        is_pure_hint: !body_text.contains("global ")
+                            && !body_text.contains("self."),
                         ast_hash: Some(ast_hash),
+                        attributes: Vec::new(),
+                        is_trait_impl: false,
                     });
 
                     extract_calls_in_node(&symbol_id, child, source, "call", edges);
@@ -210,7 +234,11 @@ fn extract_python_nodes(
                         let mut arg_cursor = arg_list.walk();
                         for base_node in arg_list.children(&mut arg_cursor) {
                             let base_name = node_text(base_node, source).trim();
-                            if !base_name.is_empty() && base_name != "(" && base_name != ")" && base_name != "," {
+                            if !base_name.is_empty()
+                                && base_name != "("
+                                && base_name != ")"
+                                && base_name != ","
+                            {
                                 edges.push(DependencyEdge {
                                     from_symbol: symbol_id.clone(),
                                     to_symbol: base_name.to_string(),
@@ -226,19 +254,38 @@ fn extract_python_nodes(
                         name: class_name.clone(),
                         kind: SymbolKind::Class,
                         file_path: path.to_path_buf(),
-                        span: SourceSpan::new(start_point.row + 1, start_point.column + 1, end_point.row + 1, end_point.column + 1),
-                        visibility: if class_name.starts_with('_') { Visibility::Private } else { Visibility::Public },
+                        span: SourceSpan::new(
+                            start_point.row + 1,
+                            start_point.column + 1,
+                            end_point.row + 1,
+                            end_point.column + 1,
+                        ),
+                        visibility: if class_name.starts_with('_') {
+                            Visibility::Private
+                        } else {
+                            Visibility::Public
+                        },
                         loc,
                         cyclomatic_complexity: 1,
                         doc: None,
                         signature: format!("class {}:", class_name),
                         is_pure_hint: false,
                         ast_hash: None,
+                        attributes: Vec::new(),
+                        is_trait_impl: false,
                     });
 
                     // Visit methods inside class body
                     if let Some(body_node) = child.child_by_field_name("body") {
-                        extract_python_nodes(path, file_str, source, body_node, Some(&class_name), symbols, edges);
+                        extract_python_nodes(
+                            path,
+                            file_str,
+                            source,
+                            body_node,
+                            Some(&class_name),
+                            symbols,
+                            edges,
+                        );
                     }
                 }
             }
@@ -290,7 +337,17 @@ fn extract_ts_js_nodes(
                     } else {
                         fn_name.clone()
                     };
-                    register_ts_fn(path, file_str, source, child, qualified, fn_name, current_class.is_some(), symbols, edges);
+                    register_ts_fn(
+                        path,
+                        file_str,
+                        source,
+                        child,
+                        qualified,
+                        fn_name,
+                        current_class.is_some(),
+                        symbols,
+                        edges,
+                    );
                 }
             }
             "method_definition" => {
@@ -301,7 +358,9 @@ fn extract_ts_js_nodes(
                     } else {
                         fn_name.clone()
                     };
-                    register_ts_fn(path, file_str, source, child, qualified, fn_name, true, symbols, edges);
+                    register_ts_fn(
+                        path, file_str, source, child, qualified, fn_name, true, symbols, edges,
+                    );
                 }
             }
             "class_declaration" => {
@@ -318,7 +377,10 @@ fn extract_ts_js_nodes(
                         if h_child.kind() == "class_heritage" {
                             let text = node_text(h_child, source);
                             for token in text.split_whitespace() {
-                                if token != "extends" && token != "implements" && token.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                                if token != "extends"
+                                    && token != "implements"
+                                    && token.chars().all(|c| c.is_alphanumeric() || c == '_')
+                                {
                                     edges.push(DependencyEdge {
                                         from_symbol: symbol_id.clone(),
                                         to_symbol: token.to_string(),
@@ -335,7 +397,12 @@ fn extract_ts_js_nodes(
                         name: class_name.clone(),
                         kind: SymbolKind::Class,
                         file_path: path.to_path_buf(),
-                        span: SourceSpan::new(start_point.row + 1, start_point.column + 1, end_point.row + 1, end_point.column + 1),
+                        span: SourceSpan::new(
+                            start_point.row + 1,
+                            start_point.column + 1,
+                            end_point.row + 1,
+                            end_point.column + 1,
+                        ),
                         visibility: Visibility::Public,
                         loc,
                         cyclomatic_complexity: 1,
@@ -343,10 +410,20 @@ fn extract_ts_js_nodes(
                         signature: format!("class {}", class_name),
                         is_pure_hint: false,
                         ast_hash: None,
+                        attributes: Vec::new(),
+                        is_trait_impl: false,
                     });
 
                     if let Some(body_node) = child.child_by_field_name("body") {
-                        extract_ts_js_nodes(path, file_str, source, body_node, Some(&class_name), symbols, edges);
+                        extract_ts_js_nodes(
+                            path,
+                            file_str,
+                            source,
+                            body_node,
+                            Some(&class_name),
+                            symbols,
+                            edges,
+                        );
                     }
                 }
             }
@@ -363,7 +440,12 @@ fn extract_ts_js_nodes(
                         name: iface_name.clone(),
                         kind: SymbolKind::Interface,
                         file_path: path.to_path_buf(),
-                        span: SourceSpan::new(start_point.row + 1, start_point.column + 1, end_point.row + 1, end_point.column + 1),
+                        span: SourceSpan::new(
+                            start_point.row + 1,
+                            start_point.column + 1,
+                            end_point.row + 1,
+                            end_point.column + 1,
+                        ),
                         visibility: Visibility::Public,
                         loc,
                         cyclomatic_complexity: 1,
@@ -371,6 +453,8 @@ fn extract_ts_js_nodes(
                         signature: format!("interface {}", iface_name),
                         is_pure_hint: true,
                         ast_hash: None,
+                        attributes: Vec::new(),
+                        is_trait_impl: false,
                     });
                 }
             }
@@ -413,8 +497,13 @@ fn register_ts_fn(
     let loc = (end_point.row.saturating_sub(start_point.row)) + 1;
 
     let complexity_triggers = &[
-        "if_statement", "for_statement", "for_in_statement",
-        "while_statement", "do_statement", "switch_case", "catch_clause",
+        "if_statement",
+        "for_statement",
+        "for_in_statement",
+        "while_statement",
+        "do_statement",
+        "switch_case",
+        "catch_clause",
         "ternary_expression",
     ];
     let cyclomatic = 1 + count_complexity(node, complexity_triggers);
@@ -429,9 +518,18 @@ fn register_ts_fn(
     symbols.push(Symbol {
         id: symbol_id.clone(),
         name: qualified_name,
-        kind: if is_method { SymbolKind::Method } else { SymbolKind::Function },
+        kind: if is_method {
+            SymbolKind::Method
+        } else {
+            SymbolKind::Function
+        },
         file_path: path.to_path_buf(),
-        span: SourceSpan::new(start_point.row + 1, start_point.column + 1, end_point.row + 1, end_point.column + 1),
+        span: SourceSpan::new(
+            start_point.row + 1,
+            start_point.column + 1,
+            end_point.row + 1,
+            end_point.column + 1,
+        ),
         visibility: Visibility::Public,
         loc,
         cyclomatic_complexity: cyclomatic,
@@ -439,6 +537,8 @@ fn register_ts_fn(
         signature: sig_text,
         is_pure_hint: !body_text.contains("this.") && !body_text.contains("console."),
         ast_hash: Some(ast_hash),
+        attributes: Vec::new(),
+        is_trait_impl: false,
     });
 
     extract_calls_in_node(&symbol_id, node, source, "call_expression", edges);
@@ -467,7 +567,11 @@ fn extract_go_nodes(
                     let loc = (end_point.row.saturating_sub(start_point.row)) + 1;
 
                     let complexity_triggers = &[
-                        "if_statement", "for_statement", "expression_case", "type_case", "communication_case",
+                        "if_statement",
+                        "for_statement",
+                        "expression_case",
+                        "type_case",
+                        "communication_case",
                     ];
                     let cyclomatic = 1 + count_complexity(child, complexity_triggers);
                     let body_text = node_text(child, source);
@@ -478,7 +582,12 @@ fn extract_go_nodes(
                         .map(|p| format!("func {}{}", fn_name, node_text(p, source)))
                         .unwrap_or_else(|| format!("func {}()", fn_name));
 
-                    let visibility = if fn_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                    let visibility = if fn_name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false)
+                    {
                         Visibility::Public
                     } else {
                         Visibility::Private
@@ -489,7 +598,12 @@ fn extract_go_nodes(
                         name: fn_name.clone(),
                         kind: SymbolKind::Function,
                         file_path: path.to_path_buf(),
-                        span: SourceSpan::new(start_point.row + 1, start_point.column + 1, end_point.row + 1, end_point.column + 1),
+                        span: SourceSpan::new(
+                            start_point.row + 1,
+                            start_point.column + 1,
+                            end_point.row + 1,
+                            end_point.column + 1,
+                        ),
                         visibility,
                         loc,
                         cyclomatic_complexity: cyclomatic,
@@ -497,6 +611,8 @@ fn extract_go_nodes(
                         signature: sig_text,
                         is_pure_hint: !body_text.contains("&") && !body_text.contains("panic"),
                         ast_hash: Some(ast_hash),
+                        attributes: Vec::new(),
+                        is_trait_impl: false,
                     });
 
                     extract_calls_in_node(&symbol_id, child, source, "call_expression", edges);
@@ -517,7 +633,11 @@ fn extract_go_nodes(
                     let loc = (end_point.row.saturating_sub(start_point.row)) + 1;
 
                     let complexity_triggers = &[
-                        "if_statement", "for_statement", "expression_case", "type_case", "communication_case",
+                        "if_statement",
+                        "for_statement",
+                        "expression_case",
+                        "type_case",
+                        "communication_case",
                     ];
                     let cyclomatic = 1 + count_complexity(child, complexity_triggers);
                     let body_text = node_text(child, source);
@@ -528,8 +648,18 @@ fn extract_go_nodes(
                         name: qualified,
                         kind: SymbolKind::Method,
                         file_path: path.to_path_buf(),
-                        span: SourceSpan::new(start_point.row + 1, start_point.column + 1, end_point.row + 1, end_point.column + 1),
-                        visibility: if m_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                        span: SourceSpan::new(
+                            start_point.row + 1,
+                            start_point.column + 1,
+                            end_point.row + 1,
+                            end_point.column + 1,
+                        ),
+                        visibility: if m_name
+                            .chars()
+                            .next()
+                            .map(|c| c.is_uppercase())
+                            .unwrap_or(false)
+                        {
                             Visibility::Public
                         } else {
                             Visibility::Private
@@ -540,6 +670,8 @@ fn extract_go_nodes(
                         signature: format!("func ({}) {}()", receiver, m_name),
                         is_pure_hint: false,
                         ast_hash: Some(ast_hash),
+                        attributes: Vec::new(),
+                        is_trait_impl: false,
                     });
 
                     extract_calls_in_node(&symbol_id, child, source, "call_expression", edges);
@@ -568,8 +700,18 @@ fn extract_go_nodes(
                                 name: type_name.clone(),
                                 kind,
                                 file_path: path.to_path_buf(),
-                                span: SourceSpan::new(start_point.row + 1, start_point.column + 1, end_point.row + 1, end_point.column + 1),
-                                visibility: if type_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                                span: SourceSpan::new(
+                                    start_point.row + 1,
+                                    start_point.column + 1,
+                                    end_point.row + 1,
+                                    end_point.column + 1,
+                                ),
+                                visibility: if type_name
+                                    .chars()
+                                    .next()
+                                    .map(|c| c.is_uppercase())
+                                    .unwrap_or(false)
+                                {
                                     Visibility::Public
                                 } else {
                                     Visibility::Private
@@ -580,6 +722,8 @@ fn extract_go_nodes(
                                 signature: format!("type {} {:?}", type_name, kind),
                                 is_pure_hint: true,
                                 ast_hash: None,
+                                attributes: Vec::new(),
+                                is_trait_impl: false,
                             });
                         }
                     }
@@ -605,7 +749,10 @@ fn fallback_regex_parse(
 
     for (idx, line) in content.lines().enumerate() {
         let trimmed = line.trim();
-        if trimmed.starts_with("def ") || trimmed.starts_with("func ") || trimmed.starts_with("function ") {
+        if trimmed.starts_with("def ")
+            || trimmed.starts_with("func ")
+            || trimmed.starts_with("function ")
+        {
             let parts: Vec<&str> = trimmed.split([' ', '(']).collect();
             if parts.len() > 1 && !parts[1].is_empty() {
                 let name = parts[1].to_string();
@@ -622,6 +769,8 @@ fn fallback_regex_parse(
                     signature: trimmed.to_string(),
                     is_pure_hint: true,
                     ast_hash: None,
+                    attributes: Vec::new(),
+                    is_trait_impl: false,
                 });
             }
         }
