@@ -102,3 +102,24 @@ fn test_capacity_prediction() {
     assert_eq!(report.estimates.len(), 4, "Should profile 4 standard device tiers");
     assert!(!report.breaking_risks.is_empty(), "Should detect breaking risks");
 }
+
+#[test]
+fn test_deep_architecture_analysis() {
+    use deslop_graph::DeepAnalyzer;
+
+    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/fixtures/sloppy_app");
+
+    let scanner = CodebaseScanner::new();
+    let parsed = scanner.scan(&fixture_dir).unwrap();
+    let graph = SymbolGraph::from_parsed(&parsed.symbols, &parsed.edges);
+
+    let report = DeepAnalyzer::analyze(&graph);
+    assert!(!report.module_metrics.is_empty(), "Should compute module metrics");
+    assert!(report.average_depth_ratio > 0.0, "Should compute average depth ratio");
+}
+

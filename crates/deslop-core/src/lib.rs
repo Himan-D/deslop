@@ -144,3 +144,42 @@ pub struct CodebaseStats {
     pub total_symbols: usize,
     pub languages: Vec<(Language, usize)>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleMetrics {
+    pub module_name: String,
+    pub afferent_coupling: usize, // Ca: incoming dependencies from other modules
+    pub efferent_coupling: usize, // Ce: outgoing dependencies to other modules
+    pub instability: f64,         // I = Ce / (Ca + Ce) [0.0 = completely stable, 1.0 = completely unstable]
+    pub abstractness: f64,        // A = abstract symbols / total symbols
+    pub distance_from_main_seq: f64, // D = |A + I - 1| [0.0 = optimal balance, 1.0 = extreme pain or uselessness]
+    pub classification: String,   // "Main Sequence", "Zone of Pain", "Zone of Uselessness"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DominatorBottleneck {
+    pub symbol_name: String,
+    pub file_path: String,
+    pub dominated_node_count: usize,
+    pub downstream_reach_pct: f64,
+    pub is_critical_chokepoint: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeepModuleScore {
+    pub symbol_name: String,
+    pub file_path: String,
+    pub interface_complexity: usize,
+    pub implementation_power: usize,
+    pub depth_ratio: f64,
+    pub is_deep: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeepArchitectureReport {
+    pub module_metrics: Vec<ModuleMetrics>,
+    pub bottlenecks: Vec<DominatorBottleneck>,
+    pub deep_module_scores: Vec<DeepModuleScore>,
+    pub average_depth_ratio: f64,
+}
+

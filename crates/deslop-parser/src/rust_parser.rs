@@ -158,10 +158,12 @@ impl<'ast, 'a> Visit<'ast> for RustAstExtractor<'a> {
     }
 
     fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
+        let self_ty = &node.self_ty;
+        let self_type = quote::quote!(#self_ty).to_string().replace(" ", "");
+
         // Track trait implementations
         if let Some((_, trait_path, _)) = &node.trait_ {
             let trait_name = quote::quote!(#trait_path).to_string().replace(" ", "");
-            let self_type = quote::quote!(#node.self_ty).to_string().replace(" ", "");
 
             self.edges.push(DependencyEdge {
                 from_symbol: format!("{}::{}", self.file_path.to_string_lossy(), self_type),
@@ -178,7 +180,6 @@ impl<'ast, 'a> Visit<'ast> for RustAstExtractor<'a> {
                 let span = m.span();
                 let start = span.start();
                 let end = span.end();
-                let self_type = quote::quote!(#node.self_ty).to_string().replace(" ", "");
                 let symbol_id = format!(
                     "{}::{}::{}",
                     self.file_path.to_string_lossy(),
@@ -193,7 +194,9 @@ impl<'ast, 'a> Visit<'ast> for RustAstExtractor<'a> {
                     + code_str.matches(" for ").count()
                     + code_str.matches(" while ").count();
 
-                let ast_hash = Self::calculate_ast_hash(&quote::quote!(#m.block).to_string());
+                let m_block = &m.block;
+                let ast_hash = Self::calculate_ast_hash(&quote::quote!(#m_block).to_string());
+                let m_sig = &m.sig;
 
                 self.symbols.push(Symbol {
                     id: symbol_id.clone(),
@@ -212,7 +215,7 @@ impl<'ast, 'a> Visit<'ast> for RustAstExtractor<'a> {
                     },
                     cyclomatic_complexity: cyclomatic,
                     doc: None,
-                    signature: quote::quote!(#m.sig).to_string(),
+                    signature: quote::quote!(#m_sig).to_string(),
                     is_pure_hint: !code_str.contains("&mut ") && !code_str.contains("unsafe"),
                     ast_hash: Some(ast_hash),
                 });
