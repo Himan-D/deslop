@@ -34,18 +34,19 @@ jobs:
       - name: Run Test Suite
         run: cargo test --workspace
 
-      # Threshold set at 50 (current score: ~41.6). Tighten as debt is paid down.
+      # Threshold set at 50 (current score: ~36.2 on crates/). Tighten as debt is paid down.
+      # Scans crates/ only — tests/fixtures intentionally contains cyclic code for test coverage.
       - name: Run Deslop Quality Gate (Max Slop 50)
-        run: ./target/release/deslop check . --max-slop 50.0
+        run: ./target/release/deslop check crates/ --max-slop 50.0
 
       - name: Git Churn & Temporal Coupling Analysis
         run: ./target/release/deslop churn . --commits 100
 
       - name: De-Looping Loop Verification
-        run: ./target/release/deslop deloop .
+        run: ./target/release/deslop deloop crates/
 
       - name: Export SCIP Code Intelligence
-        run: ./target/release/deslop scip . -o index.scip.json
+        run: ./target/release/deslop scip crates/ -o index.scip.json
 
       - name: Deep Coupling & Main Sequence Analysis
-        run: ./target/release/deslop deep .
+        run: ./target/release/deslop deep crates/
