@@ -351,7 +351,8 @@ impl McpServer {
     )> {
         let scanner = CodebaseScanner::new();
         let parsed = scanner.scan_cached(path, true)?;
-        let graph = SymbolGraph::from_parsed(&parsed.symbols, &parsed.edges);
+        let graph =
+            SymbolGraph::from_parsed_with_imports(&parsed.symbols, &parsed.edges, &parsed.imports);
         let arch_config = deslop_core::ArchitectureConfig::load_from_dir(path);
         let findings = SlopDetectorEngine::analyze_with_config(
             &parsed.symbols,
@@ -509,14 +510,14 @@ impl McpServer {
         let report = CapacityAnalyzer::analyze(&graph);
 
         let mut out = String::new();
-        out.push_str("Deslop Concurrency & Hardware Capacity Projections:\n\n");
+        out.push_str("Deslop Concurrency & Hardware Capacity Projections (heuristic — validate with load tests):\n\n");
         for est in &report.estimates {
             out.push_str(&format!("Device: {:?}\n", est.device));
             out.push_str(&format!(
-                "  Max Concurrent Users: {}\n",
+                "  ~Est. Concurrent Users: {}\n",
                 est.max_concurrent_users
             ));
-            out.push_str(&format!("  Est. Max RPS: {}\n", est.max_requests_per_sec));
+            out.push_str(&format!("  ~Est. Max RPS: {}\n", est.max_requests_per_sec));
             out.push_str(&format!(
                 "  Primary Constraint: {}\n\n",
                 est.bottleneck_resource

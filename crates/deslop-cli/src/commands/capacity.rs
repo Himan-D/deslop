@@ -6,7 +6,7 @@ use std::path::Path;
 pub fn run(path: &Path) -> anyhow::Result<()> {
     println!(
         "{}",
-        "deslop: codebase capacity & failure point predictor".bold()
+        "deslop: heuristic capacity & failure point estimator".bold()
     );
     println!("target: {}\n", path.display());
 
@@ -31,15 +31,15 @@ pub fn run(path: &Path) -> anyhow::Result<()> {
     );
     println!(
         "{:<28} {}",
-        "Prediction Latency:",
+        "Analysis Latency:",
         format!("{:.2?}", elapsed).green()
     );
     println!("--------------------------------------------------\n");
 
-    println!("Device concurrency limits:\n");
+    println!("Heuristic device concurrency projections (order-of-magnitude only):\n");
     println!(
         "{:<36} {:<16} {:<14} {:<24}",
-        "Hardware Device Profile", "Max Users (CCU)", "Throughput", "Primary Bottleneck"
+        "Hardware Device Profile", "~Est. CCU*", "~Est. RPS*", "Primary Bottleneck"
     );
     println!(
         "-----------------------------------------------------------------------------------------"
@@ -53,10 +53,13 @@ pub fn run(path: &Path) -> anyhow::Result<()> {
             est.bottleneck_resource
         );
     }
-    println!("-----------------------------------------------------------------------------------------\n");
+    println!(
+        "-----------------------------------------------------------------------------------------"
+    );
+    println!("* Static-analysis heuristic, not a load test. Validate with real benchmarks.\n");
 
     if !report.breaking_risks.is_empty() {
-        println!("Predicted failure points under load:\n");
+        println!("Potential failure points under load (heuristic):\n");
         for (i, risk) in report.breaking_risks.iter().enumerate() {
             println!("--------------------------------------------------");
             println!(
@@ -74,7 +77,7 @@ pub fn run(path: &Path) -> anyhow::Result<()> {
             println!("   {:<22} {}", "Symbol / Chain:", sym_display);
             println!(
                 "   {:<22} {}",
-                "Breaking Threshold:",
+                "Heuristic Threshold:",
                 risk.estimated_breaking_threshold.red()
             );
             println!("   {:<22} {}", "Remediation:", risk.recommendation);

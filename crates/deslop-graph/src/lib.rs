@@ -14,7 +14,7 @@ pub use profiler::{CallStackPath, StackProfileReport, StackProfiler};
 pub use scip::{ScipGenerator, ScipIndex};
 pub use trace::{DynamicRescue, OtelSpan, TraceCorrelationReport, TraceIngestionEngine};
 
-use deslop_core::{DependencyEdge, DependencyEdgeKind, Symbol, Visibility};
+use deslop_core::{DependencyEdge, DependencyEdgeKind, Import, Symbol, Visibility};
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::Bfs;
@@ -43,6 +43,17 @@ impl SymbolGraph {
     }
 
     pub fn from_parsed(symbols: &[Symbol], edges: &[DependencyEdge]) -> Self {
+        Self::from_parsed_with_imports(symbols, edges, &HashMap::new())
+    }
+
+    /// Builds the graph, consulting per-file `use` imports to resolve
+    /// aliased and module-prefixed callees before falling back to
+    /// name heuristics.
+    pub fn from_parsed_with_imports(
+        symbols: &[Symbol],
+        edges: &[DependencyEdge],
+        imports: &HashMap<std::path::PathBuf, Vec<Import>>,
+    ) -> Self {
         let mut sg = Self::new();
 
         // Indexes for scoped callee resolution:
@@ -66,17 +77,31 @@ impl SymbolGraph {
             let from_opt = sg.node_indices.get(&edge.from_symbol).copied();
             let to_opt = sg.node_indices.get(&edge.to_symbol).copied().or_else(|| {
                 let caller_file = from_opt.map(|u| sg.graph[u].file_path.as_path());
+                let file_imports: &[Import] = caller_file
+                    .and_then(|f| imports.get(f))
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
+                let normalized = normalize_callee(&edge.to_symbol, file_imports);
+                let globs: Vec<&str> = file_imports
+                    .iter()
+                    .filter(|i| i.is_glob)
+                    .map(|i| i.path.as_str())
+                    .collect();
                 resolve_callee(
-                    &edge.to_symbol,
+                    &normalized,
                     caller_file,
                     &file_scoped,
                     &global,
                     &sg.graph,
+                    &globs,
                 )
             });
 
             if let (Some(u), Some(v)) = (from_opt, to_opt) {
-                if u != v {
+                // One edge per ordered pair: callers often reference the same
+                // symbol several ways (call + type mention), and degrees
+                // should count unique relationships, not mentions.
+                if u != v && !sg.graph.contains_edge(u, v) {
                     sg.graph.add_edge(u, v, edge.kind);
                 }
             }
@@ -240,12 +265,40 @@ fn short_name(qualified: &str) -> &str {
         .unwrap_or(qualified)
 }
 
+/// Rewrites a callee through the caller's `use` imports: strips
+/// module-relative heads (`crate::`, `self::`, `super::`) and expands the
+/// head segment through renames (`PStore::charge` with
+/// `use payments::Store as PStore` becomes `payments::Store::charge`).
+/// Single-level only; alias chains are not followed.
+fn normalize_callee(callee: &str, imports: &[Import]) -> String {
+    let mut norm = callee.replace('.', "::");
+    loop {
+        if let Some(rest) = norm
+            .strip_prefix("crate::")
+            .or_else(|| norm.strip_prefix("self::"))
+            .or_else(|| norm.strip_prefix("super::"))
+        {
+            norm = rest.to_string();
+            continue;
+        }
+        break;
+    }
+    if let Some((head, tail)) = norm.split_once("::") {
+        if let Some(imp) = imports.iter().find(|i| !i.is_glob && i.local == head) {
+            let rewritten = format!("{}::{}", imp.path, tail);
+            return normalize_callee(&rewritten, &[]);
+        }
+    }
+    norm
+}
+
 /// Resolves a callee reference to a graph node without guessing:
 /// 1. `Self::` references resolve same-file only (they are always same-impl).
 /// 2. Same-file short-name match (a call most likely targets its own file).
 /// 3. Qualified `Type::member` match by suffix, else a link to the enclosing
 ///    type itself (an associated call still uses the type).
-/// 4. Bare-name global match only when exactly one candidate exists.
+/// 4. Bare-name global match only when exactly one candidate exists, or when
+///    a glob import disambiguates to exactly one file.
 ///
 /// Anything ambiguous resolves to `None` rather than a wrong node.
 fn resolve_callee(
@@ -254,6 +307,7 @@ fn resolve_callee(
     file_scoped: &HashMap<(&std::path::Path, &str), Vec<NodeIndex>>,
     global: &HashMap<&str, Vec<NodeIndex>>,
     graph: &DiGraph<Symbol, DependencyEdgeKind>,
+    globs: &[&str],
 ) -> Option<NodeIndex> {
     let short = short_name(callee);
     let is_self = callee == "Self" || callee.starts_with("Self::");
@@ -279,25 +333,65 @@ fn resolve_callee(
 
     let cands = global.get(short);
     if callee.contains("::") {
-        // Qualified: exact qualifier match or enclosing-type fallback only.
-        // Never fall back to an unrelated same-named symbol.
+        // Qualified: exact qualifier match, file-hint disambiguation, or
+        // enclosing-type fallback only. Never an unrelated same-named symbol.
         if let Some(cands) = cands {
             if let Some(hit) = match_qualified(callee, cands, graph) {
                 return Some(hit);
+            }
+            if cands.len() > 1 {
+                if let Some(head) = callee.split("::").next() {
+                    if let Some(hit) = disambiguate_by_file(cands, graph, head) {
+                        return Some(hit);
+                    }
+                }
             }
         }
         return resolve_enclosing_type(callee, caller_file, file_scoped, global, graph);
     }
 
     if let Some(cands) = cands {
-        if let Some(hit) = match_qualified(callee, cands, graph) {
-            return Some(hit);
-        }
         if cands.len() == 1 {
             return Some(cands[0]);
         }
+        for glob in globs {
+            let seg = glob.rsplit("::").next().unwrap_or(glob);
+            if let Some(hit) = disambiguate_by_file(cands, graph, seg) {
+                return Some(hit);
+            }
+        }
+        if let Some(hit) = match_qualified(callee, cands, graph) {
+            return Some(hit);
+        }
     }
     None
+}
+
+/// Narrows same-named candidates to the one living in the hinted file or
+/// directory (file stem or parent dir name). Returns `None` unless exactly
+/// one candidate matches: unique evidence or nothing.
+fn disambiguate_by_file(
+    candidates: &[NodeIndex],
+    graph: &DiGraph<Symbol, DependencyEdgeKind>,
+    hint: &str,
+) -> Option<NodeIndex> {
+    let matches: Vec<NodeIndex> = candidates
+        .iter()
+        .copied()
+        .filter(|idx| {
+            let path = &graph[*idx].file_path;
+            path.file_stem().is_some_and(|s| s == hint)
+                || path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .is_some_and(|n| n == hint)
+        })
+        .collect();
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
+    }
 }
 
 /// Links `Type::assoc_item` to the `Type` symbol itself when the member has no
@@ -357,8 +451,9 @@ fn type_name_matches(symbol_name: &str, qualifier: &str) -> bool {
 }
 
 /// Among candidates sharing a short name, find the one whose qualified symbol
-/// name ends with the callee reference (`Self::foo` and `Type::foo` both match
-/// a symbol named `Type::foo`; `Self` is treated as a wildcard receiver).
+/// name matches the callee reference: exact match, symbol-name-is-suffix
+/// (`mcp::McpServer::start` matches `McpServer::start`), or `Self::` treated
+/// as a wildcard receiver. Multiple hits mean ambiguity: `None`.
 fn match_qualified(
     callee: &str,
     candidates: &[NodeIndex],
@@ -370,6 +465,10 @@ fn match_qualified(
         let name = &graph[**idx].name;
         name == &callee_norm
             || name.ends_with(&format!("::{}", callee_norm))
+            // Module-prefixed callee matching a qualified symbol tail
+            // (`mcp::McpServer::start` vs `McpServer::start`). Single-segment
+            // names are excluded: `Cli::parse` must never link a free `parse`.
+            || (name.contains("::") && callee_norm.ends_with(&format!("::{}", name)))
             || (callee_norm.starts_with("Self::") && name.ends_with(&format!("::{}", short)))
     });
     let first = hits.next()?;
@@ -595,6 +694,171 @@ mod tests {
         )];
         let sg = SymbolGraph::from_parsed(&symbols, &[]);
         assert!(sg.find_unreachable_orphans().is_empty());
+    }
+
+    #[test]
+    fn enum_variant_use_links_the_enum() {
+        let mut status = sym("lib.rs::Status", "Status", "lib.rs", Visibility::Private);
+        status.kind = SymbolKind::Enum;
+        let symbols = vec![
+            sym("lib.rs::run", "run", "lib.rs", Visibility::Public),
+            status,
+        ];
+        let edges = vec![DependencyEdge {
+            from_symbol: "lib.rs::run".to_string(),
+            to_symbol: "Status::Active".to_string(),
+            kind: DependencyEdgeKind::ReferencesType,
+            count: 1,
+        }];
+        let sg = SymbolGraph::from_parsed(&symbols, &edges);
+        assert_eq!(outgoing_names(&sg, "lib.rs::run"), vec!["lib.rs::Status"]);
+        assert!(sg.find_unreachable_orphans().is_empty());
+    }
+
+    #[test]
+    fn unused_enum_is_still_an_orphan() {
+        let mut status = sym("lib.rs::Status", "Status", "lib.rs", Visibility::Private);
+        status.kind = SymbolKind::Enum;
+        let symbols = vec![
+            sym("lib.rs::live", "live", "lib.rs", Visibility::Public),
+            status,
+        ];
+        let sg = SymbolGraph::from_parsed(&symbols, &[]);
+        let orphans = sg.find_unreachable_orphans();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].name, "Status");
+    }
+
+    #[test]
+    fn parallel_edges_collapse_to_one() {
+        let symbols = vec![
+            sym("lib.rs::a", "a", "lib.rs", Visibility::Public),
+            sym("lib.rs::b", "b", "lib.rs", Visibility::Private),
+        ];
+        let edges = vec![
+            edge("lib.rs::a", "b"),
+            DependencyEdge {
+                from_symbol: "lib.rs::a".to_string(),
+                to_symbol: "b".to_string(),
+                kind: DependencyEdgeKind::ReferencesType,
+                count: 1,
+            },
+        ];
+        let sg = SymbolGraph::from_parsed(&symbols, &edges);
+        assert_eq!(sg.graph.edge_count(), 1);
+        let degrees = sg.compute_degrees();
+        assert_eq!(degrees["lib.rs::a"], (0, 1));
+        assert_eq!(degrees["lib.rs::b"], (1, 0));
+    }
+
+    fn imports_for(file: &str, pairs: &[(&str, &str)]) -> HashMap<PathBuf, Vec<Import>> {
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from(file),
+            pairs
+                .iter()
+                .map(|(local, path)| Import {
+                    local: local.to_string(),
+                    path: path.to_string(),
+                    is_glob: false,
+                })
+                .collect(),
+        );
+        map
+    }
+
+    #[test]
+    fn renamed_import_rewrites_and_resolves() {
+        let symbols = vec![
+            sym("app.rs::run", "run", "app.rs", Visibility::Public),
+            method(
+                "store.rs::Store::charge",
+                "Store::charge",
+                "store.rs",
+                Visibility::Private,
+                false,
+            ),
+        ];
+        let edges = vec![edge("app.rs::run", "PStore::charge")];
+        let imports = imports_for("app.rs", &[("PStore", "payments::Store")]);
+        let sg = SymbolGraph::from_parsed_with_imports(&symbols, &edges, &imports);
+        assert_eq!(
+            outgoing_names(&sg, "app.rs::run"),
+            vec!["store.rs::Store::charge"]
+        );
+    }
+
+    #[test]
+    fn module_prefixed_callee_matches_qualified_tail() {
+        let symbols = vec![
+            sym("runner.rs::run", "run", "runner.rs", Visibility::Public),
+            method(
+                "server.rs::Server::start",
+                "Server::start",
+                "server.rs",
+                Visibility::Private,
+                false,
+            ),
+            method(
+                "other.rs::Other::start",
+                "Other::start",
+                "other.rs",
+                Visibility::Private,
+                false,
+            ),
+        ];
+        // `mcp::McpServer::start` shape: module prefix + Type::method.
+        let edges = vec![edge("runner.rs::run", "net::Server::start")];
+        let sg = SymbolGraph::from_parsed(&symbols, &edges);
+        assert_eq!(
+            outgoing_names(&sg, "runner.rs::run"),
+            vec!["server.rs::Server::start"]
+        );
+    }
+
+    #[test]
+    fn qualified_callee_still_rejects_free_function_namesake() {
+        let symbols = vec![
+            sym("main.rs::run", "run", "main.rs", Visibility::Public),
+            sym("util.rs::parse", "parse", "util.rs", Visibility::Private),
+        ];
+        let edges = vec![edge("main.rs::run", "Cli::parse")];
+        let sg = SymbolGraph::from_parsed(&symbols, &edges);
+        assert!(outgoing_names(&sg, "main.rs::run").is_empty());
+    }
+
+    #[test]
+    fn glob_import_disambiguates_ambiguous_bare_name() {
+        let symbols = vec![
+            sym("app.rs::run", "run", "app.rs", Visibility::Public),
+            sym(
+                "helpers.rs::assist",
+                "assist",
+                "helpers.rs",
+                Visibility::Private,
+            ),
+            sym(
+                "other.rs::assist",
+                "assist",
+                "other.rs",
+                Visibility::Private,
+            ),
+        ];
+        let edges = vec![edge("app.rs::run", "assist")];
+        let mut imports = HashMap::new();
+        imports.insert(
+            PathBuf::from("app.rs"),
+            vec![Import {
+                local: String::new(),
+                path: "helpers".to_string(),
+                is_glob: true,
+            }],
+        );
+        let sg = SymbolGraph::from_parsed_with_imports(&symbols, &edges, &imports);
+        assert_eq!(
+            outgoing_names(&sg, "app.rs::run"),
+            vec!["helpers.rs::assist"]
+        );
     }
 
     #[test]

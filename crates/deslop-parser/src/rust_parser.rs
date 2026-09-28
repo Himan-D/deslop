@@ -1,16 +1,21 @@
-use deslop_core::{DependencyEdge, DependencyEdgeKind, SourceSpan, Symbol, SymbolKind, Visibility};
+use deslop_core::{
+    DependencyEdge, DependencyEdgeKind, Import, ParsedFile, SourceSpan, Symbol, SymbolKind,
+    Visibility,
+};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{
-    Expr, ExprCall, ExprMethodCall, ExprStruct, ImplItem, ItemFn, ItemImpl, ItemStruct, ItemTrait,
+    Expr, ExprCall, ExprMethodCall, ExprPath, ExprStruct, ImplItem, ItemConst, ItemEnum, ItemFn,
+    ItemImpl, ItemStatic, ItemStruct, ItemTrait, ItemType, TypePath,
 };
 
 pub struct RustAstExtractor<'a> {
     pub file_path: &'a Path,
     pub symbols: Vec<Symbol>,
     pub edges: Vec<DependencyEdge>,
+    pub imports: Vec<Import>,
     pub current_symbol_id: Option<String>,
     current_impl_type: Option<String>,
     in_test_module: bool,
@@ -22,6 +27,7 @@ impl<'a> RustAstExtractor<'a> {
             file_path,
             symbols: Vec::new(),
             edges: Vec::new(),
+            imports: Vec::new(),
             current_symbol_id: None,
             current_impl_type: None,
             in_test_module: false,
@@ -59,6 +65,45 @@ impl<'a> RustAstExtractor<'a> {
             .collect()
     }
 
+    fn push_plain_item(
+        &mut self,
+        name: &str,
+        vis: &syn::Visibility,
+        span: proc_macro2::Span,
+        attrs: &[syn::Attribute],
+        kind: SymbolKind,
+    ) {
+        let start = span.start();
+        let end = span.end();
+        let symbol_id = format!("{}::{}", self.file_path.to_string_lossy(), name);
+
+        let visibility = match vis {
+            syn::Visibility::Public(_) => Visibility::Public,
+            _ => Visibility::Private,
+        };
+
+        self.symbols.push(Symbol {
+            id: symbol_id,
+            name: name.to_string(),
+            kind,
+            file_path: self.file_path.to_path_buf(),
+            span: SourceSpan::new(start.line, start.column, end.line, end.column),
+            visibility,
+            loc: if end.line >= start.line {
+                end.line - start.line + 1
+            } else {
+                1
+            },
+            cyclomatic_complexity: 1,
+            doc: None,
+            signature: name.to_string(),
+            is_pure_hint: true,
+            ast_hash: None,
+            attributes: self.symbol_attributes(attrs),
+            is_trait_impl: false,
+        });
+    }
+
     fn symbol_attributes(&self, attrs: &[syn::Attribute]) -> Vec<String> {
         let mut out = Self::attribute_paths(attrs);
         // Contents of `mod tests` / `#[cfg(test)]` modules are test code even
@@ -67,6 +112,21 @@ impl<'a> RustAstExtractor<'a> {
             out.push("cfg(test)".to_string());
         }
         out
+    }
+
+    fn emit_type_ref(&mut self, path: &syn::Path) {
+        if path.segments.is_empty() {
+            return;
+        }
+        if let Some(caller) = self.current_symbol_id.clone() {
+            let dotted: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+            self.edges.push(DependencyEdge {
+                from_symbol: caller,
+                to_symbol: dotted.join("::"),
+                kind: DependencyEdgeKind::ReferencesType,
+                count: 1,
+            });
+        }
     }
 
     fn emit_generic_arg_edges(&mut self, caller: &str, args: &syn::PathArguments) {
@@ -149,6 +209,10 @@ impl<'ast> Visit<'ast> for ComplexityCounter {
 }
 
 impl<'ast, 'a> Visit<'ast> for RustAstExtractor<'a> {
+    fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+        collect_use_tree(&node.tree, &mut Vec::new(), &mut self.imports);
+    }
+
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
         let is_test = node.ident == "tests"
             || Self::attribute_paths(&node.attrs)
@@ -183,9 +247,13 @@ impl<'ast, 'a> Visit<'ast> for RustAstExtractor<'a> {
         let code_str = quote::quote!(#node).to_string();
         let cyclomatic = ComplexityCounter::of_block(&node.block);
 
-        let ast_hash = Self::calculate_ast_hash(&quote::quote!(#node.block).to_string());
+        let fn_block = &node.block;
+        let ast_hash = Self::calculate_ast_hash(&quote::quote!(#fn_block).to_string());
 
-        let sig_str = quote::quote!(#node.sig).to_string();
+        // NOTE: `#node.sig` would interpolate the whole item plus a literal
+        // `.sig`; bind the field first so only the signature is quoted.
+        let fn_sig = &node.sig;
+        let sig_str = quote::quote!(#fn_sig).to_string();
 
         self.symbols.push(Symbol {
             id: symbol_id.clone(),
@@ -243,7 +311,12 @@ impl<'ast, 'a> Visit<'ast> for RustAstExtractor<'a> {
             is_trait_impl: false,
         });
 
+        // Attribute field-type references to the struct itself.
+        let struct_id = self.symbols.last().map(|s| s.id.clone());
+        let prev = self.current_symbol_id.take();
+        self.current_symbol_id = struct_id;
         syn::visit::visit_item_struct(self, node);
+        self.current_symbol_id = prev;
     }
 
     fn visit_item_trait(&mut self, node: &'ast ItemTrait) {
@@ -279,7 +352,93 @@ impl<'ast, 'a> Visit<'ast> for RustAstExtractor<'a> {
             is_trait_impl: false,
         });
 
+        // Attribute signature-type references to the trait itself.
+        let trait_id = self.symbols.last().map(|s| s.id.clone());
+        let prev = self.current_symbol_id.take();
+        self.current_symbol_id = trait_id;
         syn::visit::visit_item_trait(self, node);
+        self.current_symbol_id = prev;
+    }
+
+    fn visit_item_enum(&mut self, node: &'ast ItemEnum) {
+        let name = node.ident.to_string();
+        let span = node.span();
+        let start = span.start();
+        let end = span.end();
+        let symbol_id = format!("{}::{}", self.file_path.to_string_lossy(), name);
+
+        let visibility = match &node.vis {
+            syn::Visibility::Public(_) => Visibility::Public,
+            _ => Visibility::Private,
+        };
+
+        self.symbols.push(Symbol {
+            id: symbol_id.clone(),
+            name,
+            kind: SymbolKind::Enum,
+            file_path: self.file_path.to_path_buf(),
+            span: SourceSpan::new(start.line, start.column, end.line, end.column),
+            visibility,
+            loc: if end.line >= start.line {
+                end.line - start.line + 1
+            } else {
+                1
+            },
+            cyclomatic_complexity: 1,
+            doc: None,
+            signature: quote::quote!(#node).to_string(),
+            is_pure_hint: true,
+            ast_hash: None,
+            attributes: self.symbol_attributes(&node.attrs),
+            is_trait_impl: false,
+        });
+
+        let prev = self.current_symbol_id.take();
+        self.current_symbol_id = Some(symbol_id);
+        syn::visit::visit_item_enum(self, node);
+        self.current_symbol_id = prev;
+    }
+
+    fn visit_item_const(&mut self, node: &'ast ItemConst) {
+        self.push_plain_item(
+            &node.ident.to_string(),
+            &node.vis,
+            node.span(),
+            &node.attrs,
+            SymbolKind::Constant,
+        );
+        let prev = self.current_symbol_id.take();
+        self.current_symbol_id = self.symbols.last().map(|s| s.id.clone());
+        syn::visit::visit_item_const(self, node);
+        self.current_symbol_id = prev;
+    }
+
+    fn visit_item_static(&mut self, node: &'ast ItemStatic) {
+        self.push_plain_item(
+            &node.ident.to_string(),
+            &node.vis,
+            node.span(),
+            &node.attrs,
+            SymbolKind::Constant,
+        );
+        let prev = self.current_symbol_id.take();
+        self.current_symbol_id = self.symbols.last().map(|s| s.id.clone());
+        syn::visit::visit_item_static(self, node);
+        self.current_symbol_id = prev;
+    }
+
+    fn visit_item_type(&mut self, node: &'ast ItemType) {
+        self.push_plain_item(
+            &node.ident.to_string(),
+            &node.vis,
+            node.span(),
+            &node.attrs,
+            SymbolKind::TypeAlias,
+        );
+        let prev = self.current_symbol_id.take();
+        self.current_symbol_id = self.symbols.last().map(|s| s.id.clone());
+        syn::visit::visit_item_type(self, node);
+        self.current_symbol_id = prev;
     }
 
     fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
@@ -373,6 +532,61 @@ impl<'ast, 'a> Visit<'ast> for RustAstExtractor<'a> {
             }
         }
         syn::visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_path(&mut self, node: &'ast ExprPath) {
+        // Value-position paths reference types, enum variants, and constants
+        // (`Status::Active`, `MAX`). Single lowercase idents are almost always
+        // local variables, so only qualified or Uppercase paths emit edges;
+        // anything unresolvable is dropped by the graph builder.
+        if node.qself.is_none() && !node.path.segments.is_empty() {
+            let first = node
+                .path
+                .segments
+                .first()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default();
+            let is_candidate = node.path.segments.len() > 1
+                || first
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false);
+            if is_candidate {
+                self.emit_type_ref(&node.path);
+            }
+        }
+        syn::visit::visit_expr_path(self, node);
+    }
+
+    fn visit_pat(&mut self, node: &'ast syn::Pat) {
+        // Pattern paths reference types: `match x { Status::Active => .. }`,
+        // `let Some(x) = ..`, `let Row { title } = ..`.
+        match node {
+            syn::Pat::Path(p) if p.qself.is_none() => self.emit_type_ref(&p.path),
+            syn::Pat::TupleStruct(p) => self.emit_type_ref(&p.path),
+            syn::Pat::Struct(p) => self.emit_type_ref(&p.path),
+            _ => {}
+        }
+        syn::visit::visit_pat(self, node);
+    }
+
+    fn visit_type_path(&mut self, node: &'ast TypePath) {
+        // Type-position references: signatures, annotations, field types,
+        // generic arguments (`Vec<Symbol>` links `Symbol` via recursion).
+        if let Some(caller) = &self.current_symbol_id {
+            if node.qself.is_none() {
+                if let Some(seg) = node.path.segments.last() {
+                    self.edges.push(DependencyEdge {
+                        from_symbol: caller.clone(),
+                        to_symbol: seg.ident.to_string(),
+                        kind: DependencyEdgeKind::ReferencesType,
+                        count: 1,
+                    });
+                }
+            }
+        }
+        syn::visit::visit_type_path(self, node);
     }
 
     fn visit_expr_struct(&mut self, node: &'ast ExprStruct) {
@@ -541,14 +755,67 @@ fn collect_type_names(ty: &syn::Type, names: &mut Vec<String>) {
     }
 }
 
-pub fn parse_rust_file(
-    path: &Path,
-    content: &str,
-) -> anyhow::Result<(Vec<Symbol>, Vec<DependencyEdge>)> {
+/// Flattens a `use` tree into (local name, full path) bindings.
+fn collect_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>, out: &mut Vec<Import>) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            prefix.push(path.ident.to_string());
+            collect_use_tree(&path.tree, prefix, out);
+            prefix.pop();
+        }
+        syn::UseTree::Name(name) => {
+            // `use foo::{self}` binds `foo` itself, not the name `self`.
+            if name.ident == "self" {
+                if let Some(last) = prefix.last() {
+                    out.push(Import {
+                        local: last.clone(),
+                        path: prefix.join("::"),
+                        is_glob: false,
+                    });
+                }
+                return;
+            }
+            let mut full = prefix.clone();
+            full.push(name.ident.to_string());
+            out.push(Import {
+                local: name.ident.to_string(),
+                path: full.join("::"),
+                is_glob: false,
+            });
+        }
+        syn::UseTree::Rename(rename) => {
+            let mut full = prefix.clone();
+            full.push(rename.ident.to_string());
+            out.push(Import {
+                local: rename.rename.to_string(),
+                path: full.join("::"),
+                is_glob: false,
+            });
+        }
+        syn::UseTree::Glob(_) => {
+            out.push(Import {
+                local: String::new(),
+                path: prefix.join("::"),
+                is_glob: true,
+            });
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                collect_use_tree(item, prefix, out);
+            }
+        }
+    }
+}
+
+pub fn parse_rust_file(path: &Path, content: &str) -> anyhow::Result<ParsedFile> {
     let syntax_tree: syn::File = syn::parse_file(content)?;
     let mut extractor = RustAstExtractor::new(path);
     extractor.visit_file(&syntax_tree);
-    Ok((extractor.symbols, extractor.edges))
+    Ok(ParsedFile {
+        symbols: extractor.symbols,
+        edges: extractor.edges,
+        imports: extractor.imports,
+    })
 }
 
 #[cfg(test)]
@@ -556,7 +823,8 @@ mod tests {
     use super::*;
 
     fn parse(content: &str) -> (Vec<Symbol>, Vec<DependencyEdge>) {
-        parse_rust_file(Path::new("test.rs"), content).expect("parse failed")
+        let parsed = parse_rust_file(Path::new("test.rs"), content).expect("parse failed");
+        (parsed.symbols, parsed.edges)
     }
 
     fn complexity_of(symbols: &[Symbol], name: &str) -> usize {
@@ -620,6 +888,31 @@ mod tests {
         );
         assert_eq!(complexity_of(&symbols, "outer"), 2);
         assert_eq!(complexity_of(&symbols, "inner"), 2);
+    }
+
+    #[test]
+    fn signature_excludes_body_and_hash_covers_body_only() {
+        let (symbols, _) = parse(
+            r#"
+            fn first(x: i32) -> i32 {
+                x + 1
+            }
+            fn second(y: i32) -> i32 {
+                x + 1
+            }
+            "#,
+        );
+        // Both bodies are token-identical (`x + 1`); only the names and
+        // parameter idents differ, and those live outside the hashed block.
+        let first = symbols.iter().find(|s| s.name == "first").unwrap();
+        assert!(!first.signature.contains('{'), "sig: {}", first.signature);
+        assert!(
+            first.signature.contains("-> i32"),
+            "sig: {}",
+            first.signature
+        );
+        let second = symbols.iter().find(|s| s.name == "second").unwrap();
+        assert_eq!(first.ast_hash, second.ast_hash);
     }
 
     #[test]
@@ -765,6 +1058,163 @@ mod tests {
         assert!(scaffold.is_test_code());
         assert!(!scaffold.is_test_entrypoint());
         assert!(test_fn.is_test_entrypoint());
+    }
+
+    #[test]
+    fn enum_const_static_alias_symbols_are_emitted() {
+        let (symbols, _) = parse(
+            r#"
+            pub enum Status { Active, Idle }
+            pub const MAX: usize = 8;
+            static SINGLETON: &str = "x";
+            pub type UserId = u64;
+            "#,
+        );
+        let kind_of = |name: &str| {
+            symbols
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("symbol {} not found", name))
+                .kind
+        };
+        assert_eq!(kind_of("Status"), deslop_core::SymbolKind::Enum);
+        assert_eq!(kind_of("MAX"), deslop_core::SymbolKind::Constant);
+        assert_eq!(kind_of("SINGLETON"), deslop_core::SymbolKind::Constant);
+        assert_eq!(kind_of("UserId"), deslop_core::SymbolKind::TypeAlias);
+        assert_eq!(
+            symbols
+                .iter()
+                .find(|s| s.name == "Status")
+                .unwrap()
+                .visibility,
+            deslop_core::Visibility::Public
+        );
+        assert_eq!(
+            symbols
+                .iter()
+                .find(|s| s.name == "SINGLETON")
+                .unwrap()
+                .visibility,
+            deslop_core::Visibility::Private
+        );
+    }
+
+    #[test]
+    fn value_and_pattern_paths_emit_type_references() {
+        let (symbols, edges) = parse(
+            r#"
+            enum Status { Active, Idle }
+            struct Row { title: String }
+            const MAX: usize = 8;
+            fn run(s: Status, row: Row) -> usize {
+                let other = Status::Idle;
+                let limit = MAX;
+                let lowercase_skipped = other;
+                match s {
+                    Status::Active => MAX,
+                    _ => 0,
+                }
+            }
+            fn destructure(row: Row) -> String {
+                let Row { title } = row;
+                title
+            }
+            "#,
+        );
+        assert!(symbols.iter().any(|s| s.name == "Status"));
+        let refs_from = |caller: &str| -> Vec<String> {
+            edges
+                .iter()
+                .filter(|e| {
+                    e.kind == DependencyEdgeKind::ReferencesType
+                        && e.from_symbol.ends_with(&format!("::{}", caller))
+                })
+                .map(|e| e.to_symbol.clone())
+                .collect()
+        };
+        let run_refs = refs_from("run");
+        assert!(
+            run_refs.contains(&"Status::Idle".to_string()),
+            "{:?}",
+            run_refs
+        );
+        assert!(run_refs.contains(&"MAX".to_string()), "{:?}", run_refs);
+        assert!(
+            run_refs.contains(&"Status::Active".to_string()),
+            "{:?}",
+            run_refs
+        );
+        // Signature and annotation types link too.
+        assert!(run_refs.contains(&"Status".to_string()), "{:?}", run_refs);
+        assert!(run_refs.contains(&"Row".to_string()), "{:?}", run_refs);
+        assert!(run_refs.contains(&"usize".to_string()), "{:?}", run_refs);
+        // Lowercase locals are not references.
+        assert!(!run_refs
+            .iter()
+            .any(|r| r == "other" || r == "s" || r == "row"));
+        // Struct patterns reference the struct.
+        let destructure_refs = refs_from("destructure");
+        assert!(
+            destructure_refs.contains(&"Row".to_string()),
+            "{:?}",
+            destructure_refs
+        );
+    }
+
+    #[test]
+    fn struct_field_types_attribute_to_the_struct() {
+        let (_symbols, edges) = parse(
+            r#"
+            struct Inner;
+            struct Outer {
+                one: Inner,
+                many: Vec<Inner>,
+            }
+            "#,
+        );
+        let from_outer: Vec<&str> = edges
+            .iter()
+            .filter(|e| {
+                e.kind == DependencyEdgeKind::ReferencesType && e.from_symbol.ends_with("::Outer")
+            })
+            .map(|e| e.to_symbol.as_str())
+            .collect();
+        assert!(from_outer.contains(&"Inner"), "{:?}", from_outer);
+    }
+
+    #[test]
+    fn use_trees_flatten_to_import_bindings() {
+        let parsed = parse_rust_file(
+            Path::new("test.rs"),
+            r#"
+            use deslop_core::{Symbol, SymbolKind};
+            use payments::Store as PStore;
+            use helpers::*;
+            use std::io::{self, BufRead};
+            fn run() {}
+            "#,
+        )
+        .expect("parse failed");
+        let binding = |local: &str| {
+            parsed
+                .imports
+                .iter()
+                .find(|i| i.local == local)
+                .unwrap_or_else(|| panic!("import {} not found: {:?}", local, parsed.imports))
+                .path
+                .clone()
+        };
+        assert_eq!(binding("Symbol"), "deslop_core::Symbol");
+        assert_eq!(binding("SymbolKind"), "deslop_core::SymbolKind");
+        assert_eq!(binding("PStore"), "payments::Store");
+        assert_eq!(binding("BufRead"), "std::io::BufRead");
+        assert_eq!(binding("io"), "std::io");
+        let glob = parsed
+            .imports
+            .iter()
+            .find(|i| i.is_glob)
+            .expect("glob import");
+        assert_eq!(glob.path, "helpers");
     }
 
     #[test]

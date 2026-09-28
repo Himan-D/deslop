@@ -148,7 +148,11 @@ impl LspServer {
     fn publish_diagnostics_for_workspace(&self, root: &Path) -> anyhow::Result<()> {
         let scanner = CodebaseScanner::new();
         if let Ok(parsed) = scanner.scan_cached(root, true) {
-            let graph = SymbolGraph::from_parsed(&parsed.symbols, &parsed.edges);
+            let graph = SymbolGraph::from_parsed_with_imports(
+                &parsed.symbols,
+                &parsed.edges,
+                &parsed.imports,
+            );
             let findings = SlopDetectorEngine::analyze(&parsed.symbols, &parsed.edges, &graph);
 
             // Group findings by file path

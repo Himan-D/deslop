@@ -1,6 +1,6 @@
 use crate::cache::{CachedFileEntry, CodebaseCache};
 use crate::{FileParser, RustParser, UniversalParser};
-use deslop_core::{CodebaseStats, DependencyEdge, Language, Symbol};
+use deslop_core::{CodebaseStats, DependencyEdge, Import, Language, Symbol};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs;
@@ -11,6 +11,7 @@ pub struct ParsedCodebase {
     pub root_dir: PathBuf,
     pub symbols: Vec<Symbol>,
     pub edges: Vec<DependencyEdge>,
+    pub imports: HashMap<PathBuf, Vec<Import>>,
     pub stats: CodebaseStats,
 }
 
@@ -109,20 +110,21 @@ impl CodebaseScanner {
                 let content_str = String::from_utf8_lossy(&content_bytes);
                 let file_loc = content_str.lines().count();
 
-                let (symbols, edges) = match lang {
+                let parsed_file = match lang {
                     Language::Rust => RustParser.parse(path, &content_str),
                     Language::TypeScript
                     | Language::JavaScript
                     | Language::Python
                     | Language::Go => UniversalParser::new(*lang).parse(path, &content_str),
-                    Language::Unknown => (Vec::new(), Vec::new()),
+                    Language::Unknown => Default::default(),
                 };
 
                 let entry = CachedFileEntry {
                     content_hash,
                     modified_secs: mtime,
-                    symbols,
-                    edges,
+                    symbols: parsed_file.symbols,
+                    edges: parsed_file.edges,
+                    imports: parsed_file.imports,
                     loc: file_loc,
                     language: *lang,
                 };
@@ -136,6 +138,7 @@ impl CodebaseScanner {
         let total_files = parsed_entries.len();
         let mut symbols = Vec::new();
         let mut edges = Vec::new();
+        let mut imports: HashMap<PathBuf, Vec<Import>> = HashMap::new();
         let mut total_loc = 0;
         let mut lang_counts: HashMap<Language, usize> = HashMap::new();
 
@@ -144,6 +147,9 @@ impl CodebaseScanner {
             *lang_counts.entry(entry.language).or_insert(0) += 1;
             symbols.extend(entry.symbols.iter().cloned());
             edges.extend(entry.edges.iter().cloned());
+            if !entry.imports.is_empty() {
+                imports.insert(path.clone(), entry.imports.clone());
+            }
             if use_cache {
                 new_cache.entries.insert(path, entry);
             }
@@ -168,6 +174,7 @@ impl CodebaseScanner {
             root_dir: root_path,
             symbols,
             edges,
+            imports,
             stats,
         })
     }

@@ -30,6 +30,10 @@ enum Commands {
         /// Explain top findings with actionable narrative (LLM when a key is set, deterministic otherwise)
         #[arg(short, long)]
         explain: bool,
+
+        /// Output format: table or json
+        #[arg(long, default_value = "table")]
+        format: String,
     },
 
     /// Analyze and resolve circular dependency loops using top-tier de-looping strategies
@@ -78,6 +82,10 @@ enum Commands {
         /// Optional test verification command (e.g. 'cargo test', 'npm test')
         #[arg(short, long)]
         verify: Option<String>,
+
+        /// Write changes without a verification command (without --verify or --yes, prints a preview and writes nothing)
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Analyze call stack depth, recursion risks, and ingest runtime flamegraph/folded stack profiles
@@ -91,7 +99,7 @@ enum Commands {
         stacks: Option<PathBuf>,
     },
 
-    /// Predict maximum concurrent users, RPS throughput, and breaking points across hardware devices
+    /// Estimate rough concurrent-user and throughput ceilings per device (static heuristic, not a load test)
     Capacity {
         /// Target directory path
         #[arg(default_value = ".")]
@@ -201,11 +209,12 @@ fn main() -> anyhow::Result<()> {
             path,
             detailed,
             explain,
-        } => commands::scan::run(&path, detailed, explain),
+            format,
+        } => commands::scan::run(&path, detailed, explain, &format),
         Commands::Deloop { path, explain } => commands::deloop::run(&path, explain),
         Commands::Invert { path, output } => commands::invert::run(&path, output),
         Commands::Prune { path, diff, output } => commands::prune::run(&path, diff, output),
-        Commands::Apply { path, verify } => commands::apply::run(&path, verify),
+        Commands::Apply { path, verify, yes } => commands::apply::run(&path, verify, yes),
         Commands::Profile { path, stacks } => commands::profile::run(&path, stacks),
         Commands::Capacity { path } => commands::capacity::run(&path),
         Commands::Graph {

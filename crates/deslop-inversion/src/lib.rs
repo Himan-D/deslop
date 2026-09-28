@@ -5,7 +5,7 @@ pub mod testgen;
 
 pub use delooper::{DeloopPlan, DelooperEngine, DeloopingStrategy};
 pub use lossless::LosslessRewriter;
-pub use refactor::{RefactorEngine, RefactorResult};
+pub use refactor::{PlannedDeletion, PlannedInline, RefactorEngine, RefactorPlan, RefactorResult};
 pub use testgen::{
     GoTestEmitter, PythonTestEmitter, RustTestEmitter, SynthesizedTestSuite, TestEmitter,
     TestGenerator, TypeScriptTestEmitter,

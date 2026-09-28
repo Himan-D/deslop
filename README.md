@@ -50,6 +50,12 @@ cargo build --release
 # Run a scan on any codebase
 target/release/deslop scan ./path/to/codebase
 
+# Machine-readable scan output for CI pipelines and coding agents
+target/release/deslop scan ./path/to/codebase --format json
+
+# Explain top findings (LLM narrative when a key is set, deterministic otherwise)
+target/release/deslop scan ./path/to/codebase --explain
+
 # De-loop circular dependencies with actionable refactor plans
 target/release/deslop deloop ./path/to/codebase
 
@@ -62,14 +68,20 @@ target/release/deslop profile ./path/to/codebase
 # Correlate static AST symbols with runtime CPU flamegraph profiles (perf, cargo-flamegraph, pprof)
 target/release/deslop profile ./path/to/codebase --stacks ./profile.folded
 
-# Predict maximum concurrent users, RPS throughput, and breaking points across hardware devices
+# Rough capacity ceilings per device (static heuristic, not a load test)
 target/release/deslop capacity ./path/to/codebase
 
 # Preview unified diff patches to prune dead code and tollbooths
 target/release/deslop prune ./path/to/codebase
 
+# Preview what apply would change (safe default: writes nothing, exits 2)
+target/release/deslop apply ./path/to/codebase
+
 # Surgically apply refactors with automatic rollback if test verification fails
 target/release/deslop apply ./path/to/codebase --verify "cargo test"
+
+# ...or write without verification (explicit opt-in, no rollback net)
+target/release/deslop apply ./path/to/codebase --yes
 
 # Launch interactive terminal UI dashboard (Ratatui)
 target/release/deslop tui ./path/to/codebase
@@ -80,7 +92,7 @@ target/release/deslop scip ./path/to/codebase -o index.scip.json
 # Deep architectural analysis: package coupling, main sequence distance, and dominator bottlenecks
 target/release/deslop deep ./path/to/codebase
 
-# Synthesize characterization and property-based tests before refactoring
+# Synthesize compiling characterization tests (real invocations + determinism checks; #[ignore] + TODOs where a fixture needs you)
 target/release/deslop testgen ./path/to/codebase -o tests_invariants.rs
 
 # Ingest runtime OpenTelemetry traces to protect dynamic entrypoints from false-positive pruning
@@ -162,8 +174,8 @@ Deslop implements a native MCP server (`deslop mcp`) compliant with the **Model 
 1. `deslop_scan`: Computes the Slop Index (0-100), LOC, symbols, and lists top debt findings.
 2. `deslop_deloop`: Discovers cycles and outputs the Feedback Arc Set (FAS) cut edge and actionable steps.
 3. `deslop_deep`: Computes Robert C. Martin's Package Coupling ($C_a, C_e, I, A, D$), Zone of Pain, and dominator bottlenecks.
-4. `deslop_capacity`: Predicts maximum concurrent users and RPS breaking points across hardware devices.
-5. `deslop_testgen`: Synthesizes characterization and property-based test suites to capture behavioral invariants.
+4. `deslop_capacity`: Heuristic concurrent-user and RPS ceilings per device (static estimate, not a load test).
+5. `deslop_testgen`: Synthesizes compiling characterization tests with real invocations and determinism checks.
 6. `deslop_prune_diff`: Generates a unified diff patch preview showing dead code to delete and tollbooths to collapse.
 7. `deslop_scip`: Exports the complete symbol dependency graph in standard SCIP JSON format.
 8. `deslop_churn`: Analyzes git commit history to detect churn hotspots and hidden temporal coupling (files that co-change with 0 static imports).

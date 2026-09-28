@@ -1,4 +1,4 @@
-use deslop_core::{DependencyEdge, Language, Symbol};
+use deslop_core::{DependencyEdge, Import, Language, Symbol};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
 const CACHE_DIR_NAME: &str = ".deslop";
 const CACHE_FILE_NAME: &str = "cache.json";
 
@@ -16,6 +16,8 @@ pub struct CachedFileEntry {
     pub modified_secs: u64,
     pub symbols: Vec<Symbol>,
     pub edges: Vec<DependencyEdge>,
+    #[serde(default)]
+    pub imports: Vec<Import>,
     pub loc: usize,
     pub language: Language,
 }

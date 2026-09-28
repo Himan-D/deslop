@@ -49,7 +49,8 @@ pub fn scan_and_analyze(
     pb.finish_and_clear();
 
     let pb_graph = create_spinner("Building semantic dependency graph (O(1) lookups)...");
-    let graph = SymbolGraph::from_parsed(&parsed.symbols, &parsed.edges);
+    let graph =
+        SymbolGraph::from_parsed_with_imports(&parsed.symbols, &parsed.edges, &parsed.imports);
     pb_graph.finish_and_clear();
 
     let arch_config = deslop_core::ArchitectureConfig::load_from_dir(path);

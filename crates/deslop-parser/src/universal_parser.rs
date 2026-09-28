@@ -1,15 +1,12 @@
 use deslop_core::{
-    DependencyEdge, DependencyEdgeKind, Language, SourceSpan, Symbol, SymbolKind, Visibility,
+    DependencyEdge, DependencyEdgeKind, Language, ParsedFile, SourceSpan, Symbol, SymbolKind,
+    Visibility,
 };
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use tree_sitter::{Node, Parser, Tree};
 
-pub fn parse_universal_file(
-    path: &Path,
-    content: &str,
-    lang: Language,
-) -> (Vec<Symbol>, Vec<DependencyEdge>) {
+pub fn parse_universal_file(path: &Path, content: &str, lang: Language) -> ParsedFile {
     let mut parser = Parser::new();
     let ext = path
         .extension()
@@ -38,14 +35,23 @@ pub fn parse_universal_file(
                 let mut edges = Vec::new();
                 extract_tree_sitter_ast(path, content, &tree, lang, &mut symbols, &mut edges);
                 if !symbols.is_empty() {
-                    return (symbols, edges);
+                    return ParsedFile {
+                        symbols,
+                        edges,
+                        imports: Vec::new(),
+                    };
                 }
             }
         }
     }
 
     // Fallback: Lightweight token scanner if Tree-sitter is unavailable
-    fallback_regex_parse(path, content, lang)
+    let (symbols, edges) = fallback_regex_parse(path, content, lang);
+    ParsedFile {
+        symbols,
+        edges,
+        imports: Vec::new(),
+    }
 }
 
 fn extract_tree_sitter_ast(
@@ -577,10 +583,15 @@ fn extract_go_nodes(
                     let body_text = node_text(child, source);
                     let ast_hash = hash_slice(body_text);
 
-                    let sig_text = child
+                    let params_text = child
                         .child_by_field_name("parameters")
-                        .map(|p| format!("func {}{}", fn_name, node_text(p, source)))
-                        .unwrap_or_else(|| format!("func {}()", fn_name));
+                        .map(|p| node_text(p, source).to_string())
+                        .unwrap_or_else(|| "()".to_string());
+                    let result_text = child
+                        .child_by_field_name("result")
+                        .map(|r| format!(" {}", node_text(r, source).trim()))
+                        .unwrap_or_default();
+                    let sig_text = format!("func {}{}{}", fn_name, params_text, result_text);
 
                     let visibility = if fn_name
                         .chars()
@@ -621,9 +632,17 @@ fn extract_go_nodes(
             "method_declaration" => {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     let m_name = node_text(name_node, source).to_string();
+                    // Receiver `(r *Store)` -> type `Store` (last identifier).
                     let receiver = child
                         .child_by_field_name("receiver")
-                        .map(|r| node_text(r, source).replace(['(', ')', '*', ' '], ""))
+                        .map(|r| {
+                            node_text(r, source)
+                                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                                .filter(|s| !s.is_empty())
+                                .last()
+                                .unwrap_or("Unknown")
+                                .to_string()
+                        })
                         .unwrap_or_else(|| "Unknown".to_string());
 
                     let qualified = format!("{}::{}", receiver, m_name);
@@ -667,7 +686,19 @@ fn extract_go_nodes(
                         loc,
                         cyclomatic_complexity: cyclomatic,
                         doc: None,
-                        signature: format!("func ({}) {}()", receiver, m_name),
+                        signature: format!(
+                            "func ({}) {}{}{}",
+                            receiver,
+                            m_name,
+                            child
+                                .child_by_field_name("parameters")
+                                .map(|p| node_text(p, source).to_string())
+                                .unwrap_or_else(|| "()".to_string()),
+                            child
+                                .child_by_field_name("result")
+                                .map(|r| format!(" {}", node_text(r, source).trim()))
+                                .unwrap_or_default()
+                        ),
                         is_pure_hint: false,
                         ast_hash: Some(ast_hash),
                         attributes: Vec::new(),

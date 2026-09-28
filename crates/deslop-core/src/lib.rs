@@ -170,6 +170,25 @@ pub struct DependencyEdge {
     pub count: usize,
 }
 
+/// One parsed file's full extraction result.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ParsedFile {
+    pub symbols: Vec<Symbol>,
+    pub edges: Vec<DependencyEdge>,
+    pub imports: Vec<Import>,
+}
+
+/// A single `use` binding: `local` is the name usable in this file,
+/// `path` is the referenced module path (`foo::bar as baz` ->
+/// local `baz`, path `foo::bar`). Glob imports (`use x::*`) carry
+/// `is_glob` with the glob root as `path`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Import {
+    pub local: String,
+    pub path: String,
+    pub is_glob: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SlopKind {
     /// Wrapper function/class that only passes calls through with zero added value

@@ -3,11 +3,48 @@ use colored::*;
 use deslop_inversion::RefactorEngine;
 use std::path::Path;
 
-pub fn run(path: &Path, verify: Option<String>) -> anyhow::Result<()> {
+pub fn run(path: &Path, verify: Option<String>, yes: bool) -> anyhow::Result<()> {
     println!("{}", "deslop: surgical refactor & verification".bold());
     println!("target: {}\n", path.display());
 
     let (parsed, _graph, findings, _elapsed) = scan_and_analyze(path)?;
+
+    // Safe by default: without --verify or --yes, preview and write nothing.
+    if verify.is_none() && !yes {
+        let plan = RefactorEngine::plan(&findings, &parsed.symbols)?;
+        if plan.is_empty() {
+            println!(
+                "{}",
+                "Nothing prunable: no dead code or tollbooth wrappers found.".green()
+            );
+            return Ok(());
+        }
+        println!(
+            "{}",
+            "Preview — no files written. Re-run with --yes to write, or --verify '<cmd>' to write with rollback protection.\n".yellow()
+        );
+        if !plan.deletions.is_empty() {
+            println!("{}", "Would delete:".bold());
+            for d in &plan.deletions {
+                println!(
+                    "  {}:{}  {} ({} lines)",
+                    d.file.display(),
+                    d.start_line,
+                    d.symbol_name,
+                    d.lines_removed
+                );
+            }
+            println!();
+        }
+        if !plan.inlines.is_empty() {
+            println!("{}", "Would inline callsites:".bold());
+            for i in &plan.inlines {
+                println!("  {} -> {}", i.wrapper, i.target);
+            }
+            println!();
+        }
+        std::process::exit(2);
+    }
 
     let pb = create_spinner("Executing surgical inlining and dead-code elimination...");
     let res = RefactorEngine::apply(path, &findings, &parsed.symbols, verify.as_deref())?;
@@ -53,7 +90,7 @@ pub fn run(path: &Path, verify: Option<String>) -> anyhow::Result<()> {
         println!("--------------------------------------------------\n");
         println!(
             "{}",
-            "Refactoring complete. No verification command was supplied (-V/--verify) — run your test suite before committing.".yellow()
+            "Refactoring complete (--yes without --verify: no rollback net — run your test suite before committing).".yellow()
         );
     }
     Ok(())

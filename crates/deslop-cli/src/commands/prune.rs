@@ -1,5 +1,6 @@
 use super::common::scan_and_analyze;
 use colored::*;
+use deslop_inversion::RefactorEngine;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,12 +11,7 @@ pub fn run(path: &Path, diff: bool, output: Option<PathBuf>) -> anyhow::Result<(
     let (_parsed, _graph, findings, _elapsed) = scan_and_analyze(path)?;
     let prunable: Vec<_> = findings
         .iter()
-        .filter(|f| {
-            matches!(
-                f.kind,
-                deslop_core::SlopKind::DeadOrphan | deslop_core::SlopKind::TollboothWrapper
-            )
-        })
+        .filter(|f| RefactorEngine::is_prunable(f))
         .collect();
 
     if prunable.is_empty() {
