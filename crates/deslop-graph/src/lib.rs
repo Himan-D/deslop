@@ -141,6 +141,7 @@ impl SymbolGraph {
             if sym.visibility == Visibility::Public
                 || sym.is_trait_impl
                 || sym.is_test_entrypoint()
+                || sym.is_implicit_entrypoint()
                 || sym.name == "main"
                 || sym.name.ends_with("::main")
                 || sym.name.contains("handler")
@@ -670,15 +671,15 @@ mod tests {
             Visibility::Private,
         );
         attr_test.attributes = vec!["test".to_string()];
-        let symbols = vec![
-            attr_test,
-            sym(
-                "tests/integration.rs::helper",
-                "helper",
-                "tests/integration.rs",
-                Visibility::Private,
-            ),
-        ];
+        // The scanner tags symbols under `tests/` relative to the scan root.
+        let mut helper = sym(
+            "tests/integration.rs::helper",
+            "helper",
+            "tests/integration.rs",
+            Visibility::Private,
+        );
+        helper.attributes = vec![deslop_core::TEST_PATH_ATTR.to_string()];
+        let symbols = vec![attr_test, helper];
         let sg = SymbolGraph::from_parsed(&symbols, &[]);
         assert!(sg.find_unreachable_orphans().is_empty());
     }

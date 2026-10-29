@@ -5,7 +5,10 @@ pub mod testgen;
 
 pub use delooper::{DeloopPlan, DelooperEngine, DeloopingStrategy};
 pub use lossless::LosslessRewriter;
-pub use refactor::{PlannedDeletion, PlannedInline, RefactorEngine, RefactorPlan, RefactorResult};
+pub use refactor::{
+    FileRewrite, PlannedDeletion, PlannedInline, RefactorEngine, RefactorPlan, RefactorResult,
+    RewriteSet, SkippedItem,
+};
 pub use testgen::{
     GoTestEmitter, PythonTestEmitter, RustTestEmitter, SynthesizedTestSuite, TestEmitter,
     TestGenerator, TypeScriptTestEmitter,
@@ -55,6 +58,7 @@ impl InversionEngine {
         _edges: &[DependencyEdge],
         graph: &SymbolGraph,
         findings: &[SlopFinding],
+        use_llm: bool,
     ) -> InvertedArchitecture {
         let slop_score =
             SlopDetectorEngine::calculate_slop_index(stats.total_lines_of_code, findings);
@@ -150,9 +154,10 @@ impl InversionEngine {
 
         let deloop_plans = DelooperEngine::compute_deloop_plans(symbols, graph);
 
-        // Optionally query LLM if API key is provided
+        // The LLM is opt-in: it receives a codebase summary, so it runs only
+        // when the caller asked for it and a provider key is present.
         let llm = LlmClient::auto_detect();
-        let llm_narrative = if llm.provider != deslop_llm::LlmProvider::Offline {
+        let llm_narrative = if use_llm && llm.provider != deslop_llm::LlmProvider::Offline {
             let sys = "You are a Principal Software Architect. Synthesize a concise, high-impact architectural de-slopping rationale.";
             let prompt = format!(
                 "Analyze codebase `{}`. Original LOC: {}, Slop Score: {:.1}, Detected Cycles: {}. Explain the top 2 architectural inversions needed.",

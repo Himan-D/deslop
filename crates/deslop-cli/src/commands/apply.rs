@@ -1,4 +1,4 @@
-use super::common::{create_spinner, scan_and_analyze};
+use super::common::{callsite_index, create_spinner, scan_and_analyze};
 use colored::*;
 use deslop_inversion::RefactorEngine;
 use std::path::Path;
@@ -8,10 +8,12 @@ pub fn run(path: &Path, verify: Option<String>, yes: bool) -> anyhow::Result<()>
     println!("target: {}\n", path.display());
 
     let (parsed, _graph, findings, _elapsed) = scan_and_analyze(path)?;
+    let callsites = callsite_index(&parsed);
 
     // Safe by default: without --verify or --yes, preview and write nothing.
     if verify.is_none() && !yes {
-        let plan = RefactorEngine::plan(&findings, &parsed.symbols)?;
+        let plan = RefactorEngine::plan(&findings, &parsed.symbols, &callsites)?;
+        print_skipped(&plan.skipped);
         if plan.is_empty() {
             println!(
                 "{}",
@@ -47,7 +49,13 @@ pub fn run(path: &Path, verify: Option<String>, yes: bool) -> anyhow::Result<()>
     }
 
     let pb = create_spinner("Executing surgical inlining and dead-code elimination...");
-    let res = RefactorEngine::apply(path, &findings, &parsed.symbols, verify.as_deref())?;
+    let res = RefactorEngine::apply(
+        path,
+        &findings,
+        &parsed.symbols,
+        &callsites,
+        verify.as_deref(),
+    )?;
     pb.finish_and_clear();
 
     if !res.verified {
@@ -61,6 +69,14 @@ pub fn run(path: &Path, verify: Option<String>, yes: bool) -> anyhow::Result<()>
             eprintln!("\n{}", err.red());
         }
         std::process::exit(1);
+    }
+
+    if res.files_modified.is_empty() {
+        println!(
+            "{}",
+            "Nothing was written: no safe changes to apply.".yellow()
+        );
+        return Ok(());
     }
 
     println!(
@@ -85,7 +101,7 @@ pub fn run(path: &Path, verify: Option<String>, yes: bool) -> anyhow::Result<()>
             format!("'{}' passed cleanly", v_cmd).green()
         );
         println!("--------------------------------------------------\n");
-        println!("Refactoring complete with zero regressions.");
+        println!("Refactoring complete; verification passed.");
     } else {
         println!("--------------------------------------------------\n");
         println!(
@@ -94,4 +110,19 @@ pub fn run(path: &Path, verify: Option<String>, yes: bool) -> anyhow::Result<()>
         );
     }
     Ok(())
+}
+
+fn print_skipped(skipped: &[deslop_inversion::SkippedItem]) {
+    for s in skipped {
+        println!(
+            "{} {} ({}): {}",
+            "skipped".yellow(),
+            s.symbol_name,
+            s.file.display(),
+            s.reason
+        );
+    }
+    if !skipped.is_empty() {
+        println!();
+    }
 }

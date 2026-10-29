@@ -5,12 +5,27 @@ use deslop_core::{
 use deslop_graph::SymbolGraph;
 use std::collections::HashMap;
 
+pub mod callsites;
+pub use callsites::{bare_name, call_site_identifiers, CallSiteIndex};
+
+/// Scores are normalized per 1,000 LOC. Below this size the denominator is
+/// floored, so a few findings in a tiny project cannot saturate the index.
+pub const MIN_SCORED_LOC: usize = 1000;
+
+/// Repositories with fewer LOC than this produce a low-confidence score.
+pub fn score_is_reliable(total_loc: usize) -> bool {
+    total_loc >= MIN_SCORED_LOC
+}
+
 /// Read-only input shared by every detection rule.
 pub struct DetectionContext<'a> {
     pub symbols: &'a [Symbol],
     pub edges: &'a [DependencyEdge],
     pub graph: &'a SymbolGraph,
     pub config: Option<&'a ArchitectureConfig>,
+    /// Call-site identifiers across the codebase. When absent, rules that
+    /// need textual evidence (dead code) fall back to the graph alone.
+    pub callsites: Option<&'a CallSiteIndex>,
 }
 
 /// One architectural anti-pattern detector. Each rule is an independent unit
@@ -38,11 +53,24 @@ impl SlopDetectorEngine {
         graph: &SymbolGraph,
         config: Option<&ArchitectureConfig>,
     ) -> Vec<SlopFinding> {
+        Self::analyze_full(symbols, edges, graph, config, None)
+    }
+
+    /// Full analysis, including the textual call-site index used to suppress
+    /// dead-code findings for methods the static graph cannot resolve.
+    pub fn analyze_full(
+        symbols: &[Symbol],
+        edges: &[DependencyEdge],
+        graph: &SymbolGraph,
+        config: Option<&ArchitectureConfig>,
+        callsites: Option<&CallSiteIndex>,
+    ) -> Vec<SlopFinding> {
         let ctx = DetectionContext {
             symbols,
             edges,
             graph,
             config,
+            callsites,
         };
         let mut findings = Vec::new();
         for rule in Self::default_rules() {
@@ -82,8 +110,10 @@ impl SlopDetectorEngine {
             penalty += weight;
         }
 
-        // Normalize per 1,000 lines of code
-        let normalized = (penalty / (total_loc as f64 / 1000.0)).clamp(0.0, 100.0);
+        // Normalize per 1,000 lines of code, with the denominator floored so
+        // tiny projects are not scored as if they were dense.
+        let denominator_loc = total_loc.max(MIN_SCORED_LOC) as f64;
+        let normalized = (penalty / (denominator_loc / 1000.0)).clamp(0.0, 100.0);
         (normalized * 10.0).round() / 10.0
     }
 }
@@ -190,6 +220,11 @@ impl DetectionRule for GhostAbstractionRule {
         }
 
         for sym in ctx.symbols {
+            // Test fixtures are intentionally minimal: a one-implementor trait
+            // there is a test seam, not architectural debt.
+            if sym.is_test_entrypoint() {
+                continue;
+            }
             if (sym.kind == SymbolKind::Interface || sym.kind == SymbolKind::Trait)
                 && sym.visibility != Visibility::Public
             {
@@ -257,9 +292,19 @@ impl DetectionRule for TollboothWrapperRule {
             if sym.is_test_code() {
                 continue;
             }
+            // Public functions are API surface: a thin forwarder there is a
+            // deliberate facade (and inlining it would change the API).
+            if sym.visibility == Visibility::Public {
+                continue;
+            }
+            // Constructors and conversions are thin by convention.
+            if is_constructor_like(&sym.name) {
+                continue;
+            }
 
             if (sym.kind == SymbolKind::Function || sym.kind == SymbolKind::Method)
-                && sym.loc <= 6
+                // A pass-through has one statement: signature, body line, closing brace.
+                && sym.loc <= 3
                 && sym.cyclomatic_complexity <= 2
             {
                 if let Some(calls) = outgoing_calls.get(sym.id.as_str()) {
@@ -310,6 +355,11 @@ impl DetectionRule for StructuralCloneRule {
             if sym.is_test_code() {
                 continue;
             }
+            // Trait impls (serde visitors, Display, From...) repeat the same
+            // shape by contract; that repetition is not duplicated logic.
+            if sym.is_trait_impl {
+                continue;
+            }
             if let Some(h) = &sym.ast_hash {
                 if sym.loc >= 5 {
                     hash_map.entry(h.as_str()).or_default().push(sym);
@@ -326,7 +376,9 @@ impl DetectionRule for StructuralCloneRule {
                         symbol_id: duplicate.id.clone(),
                         file_path: duplicate.file_path.clone(),
                         line: duplicate.span.start_line,
-                        severity: Severity::High,
+                        // Clones are real but low-value compared with cycles
+                        // and dead code; they inform rather than gate.
+                        severity: Severity::Medium,
                         confidence: 0.95,
                         title: format!(
                             "Structural Clone: `{}` matches `{}`",
@@ -364,6 +416,13 @@ impl DetectionRule for DeadOrphanRule {
         let orphans = ctx.graph.find_unreachable_orphans();
         orphans
             .into_iter()
+            .filter(|sym| !sym.is_test_code() && !sym.is_implicit_entrypoint())
+            // Attributes (`#[global_allocator]`, `#[no_mangle]`, `#[inline]`...)
+            // can wire an item in without any call the graph or text can see.
+            .filter(|sym| sym.attributes.is_empty())
+            // The graph misses method calls on values. If the name is used in
+            // call position anywhere in the codebase, it is not provably dead.
+            .filter(|sym| !ctx.callsites.is_some_and(|idx| idx.referenced(&sym.name)))
             .map(|sym| SlopFinding {
                 kind: SlopKind::DeadOrphan,
                 symbol_id: sym.id.clone(),
@@ -383,6 +442,15 @@ impl DetectionRule for DeadOrphanRule {
     }
 }
 
+/// Constructors and conversions are thin by convention, not by accident.
+fn is_constructor_like(name: &str) -> bool {
+    let bare = bare_name(name);
+    matches!(bare, "new" | "default" | "from" | "build" | "create" | "open" | "init" | "with")
+        || bare.starts_with("with_")
+        || bare.starts_with("from_")
+        || bare.starts_with("new_")
+}
+
 /// Detect circular dependency cycles
 pub struct CircularDependencyRule;
 
@@ -395,25 +463,58 @@ impl DetectionRule for CircularDependencyRule {
         let cycles = ctx.graph.find_circular_dependencies();
         let sym_map: HashMap<&str, &Symbol> =
             ctx.symbols.iter().map(|s| (s.name.as_str(), s)).collect();
+        // The graph resolves calls by bare name, so `new` or `default` can
+        // stitch unrelated types into a fake loop. Count how many symbols
+        // share each bare name; cycles through shared names are downgraded.
+        let mut bare_counts: HashMap<&str, usize> = HashMap::new();
+        for s in ctx.symbols {
+            *bare_counts.entry(bare_name(&s.name)).or_insert(0) += 1;
+        }
         let mut findings = Vec::new();
 
         for cycle in cycles {
             let cycle_repr = cycle.join(" -> ");
             if let Some(first_sym_name) = cycle.first() {
                 if let Some(first_sym) = sym_map.get(first_sym_name.as_str()) {
+                    // Test fixtures may wire types into deliberate loops.
+                    if first_sym.is_test_entrypoint() {
+                        continue;
+                    }
+                    // Severity follows how far the loop reaches: a loop inside
+                    // one file is cheap to fix, a loop across three or more
+                    // files is a layering problem.
+                    let files: std::collections::HashSet<&std::path::Path> = cycle
+                        .iter()
+                        .filter_map(|n| sym_map.get(n.as_str()))
+                        .map(|s| s.file_path.as_path())
+                        .collect();
+                    let ambiguous = cycle
+                        .iter()
+                        .any(|n| bare_counts.get(bare_name(n)).copied().unwrap_or(0) > 1);
+                    let severity = match (ambiguous, files.len()) {
+                        (true, _) => Severity::Low,
+                        (false, 0 | 1) => Severity::Medium,
+                        (false, 2) => Severity::High,
+                        (false, _) => Severity::Critical,
+                    };
+                    let confidence = if ambiguous { 0.5 } else { 0.95 };
                     findings.push(SlopFinding {
-                        kind: SlopKind::BarrelBloat,
+                        kind: SlopKind::Cycle,
                         symbol_id: first_sym.id.clone(),
                         file_path: first_sym.file_path.clone(),
                         line: first_sym.span.start_line,
-                        severity: Severity::Critical,
-                        confidence: 0.95,
+                        severity,
+                        confidence,
                         title: format!("Circular Dependency Loop: {}", cycle_repr),
                         description: format!(
-                            "A circular dependency loop was detected: {} -> {}. This tight coupling leads to initialization order bugs and prevents modular compilation.",
-                            cycle_repr, first_sym_name
+                            "A circular dependency loop spans {} file(s): {} -> {}. This tight coupling leads to initialization order bugs and prevents modular compilation.",
+                            files.len(), cycle_repr, first_sym_name
                         ),
-                        remediation: "Break the cycle by extracting shared data/types into an independent leaf module or applying dependency inversion.".to_string(),
+                        remediation: if ambiguous {
+                            "Verify the loop first: it passes through names shared by several symbols, so the static graph may have merged unrelated calls.".to_string()
+                        } else {
+                            "Break the cycle by extracting shared data/types into an independent leaf module or applying dependency inversion.".to_string()
+                        },
                         estimated_lines_saved: 0,
                     });
                 }
@@ -437,6 +538,9 @@ impl DetectionRule for GodObjectRule {
         let mut findings = Vec::new();
 
         for sym in ctx.symbols {
+            if sym.is_test_code() {
+                continue;
+            }
             if sym.kind == SymbolKind::Struct || sym.kind == SymbolKind::Class {
                 // Widely referenced data with (almost) no behavior is a shared
                 // domain type, not a god object. Require real behavior or size.
@@ -459,7 +563,9 @@ impl DetectionRule for GodObjectRule {
                             symbol_id: sym.id.clone(),
                             file_path: sym.file_path.clone(),
                             line: sym.span.start_line,
-                            severity: Severity::High,
+                            // Large core types are often large by design; this
+                            // is a review prompt, not a gate-level defect.
+                            severity: Severity::Medium,
                             confidence: 0.85,
                             title: format!("God Object: `{}`", sym.name),
                             description: format!(
@@ -549,6 +655,7 @@ mod tests {
             edges: &edges,
             graph: &graph,
             config: None,
+            callsites: None,
         };
         let findings = TollboothWrapperRule.detect(&ctx);
         assert_eq!(findings.len(), 1);
@@ -574,6 +681,7 @@ mod tests {
             edges: &edges,
             graph: &graph,
             config: None,
+            callsites: None,
         };
         // 16 incoming edges but no behavior: shared data, not a god object.
         assert!(GodObjectRule.detect(&ctx).is_empty());
@@ -594,7 +702,192 @@ mod tests {
             edges: &edges,
             graph: &graph,
             config: None,
+            callsites: None,
         };
         assert_eq!(GodObjectRule.detect(&ctx).len(), 1);
+    }
+
+    fn edge_of(kind: DependencyEdgeKind, from: &str, to: &str) -> DependencyEdge {
+        DependencyEdge {
+            from_symbol: from.to_string(),
+            to_symbol: to.to_string(),
+            kind,
+            count: 1,
+        }
+    }
+
+    fn run_tollbooth(symbols: &[Symbol], edges: &[DependencyEdge]) -> Vec<SlopFinding> {
+        let graph = SymbolGraph::from_parsed(symbols, edges);
+        let ctx = DetectionContext {
+            symbols,
+            edges,
+            graph: &graph,
+            config: None,
+            callsites: None,
+        };
+        TollboothWrapperRule.detect(&ctx)
+    }
+
+    #[test]
+    fn tollbooth_skips_constructors_public_api_and_test_code() {
+        let mut public_facade = sym("lib.rs::api", "api", SymbolKind::Function, 3);
+        public_facade.visibility = Visibility::Public;
+        let constructor = sym("lib.rs::Thing::new", "Thing::new", SymbolKind::Method, 3);
+        let mut test_wrapper = sym("lib.rs::helper", "helper", SymbolKind::Function, 3);
+        test_wrapper.attributes = vec!["test".to_string()];
+        let target = sym("lib.rs::target", "target", SymbolKind::Function, 40);
+        let symbols = vec![public_facade, constructor, test_wrapper, target];
+        let edges = vec![
+            edge_of(DependencyEdgeKind::Calls, "lib.rs::api", "target"),
+            edge_of(DependencyEdgeKind::Calls, "lib.rs::Thing::new", "target"),
+            edge_of(DependencyEdgeKind::Calls, "lib.rs::helper", "target"),
+        ];
+        assert!(run_tollbooth(&symbols, &edges).is_empty());
+    }
+
+    #[test]
+    fn dead_orphan_is_suppressed_when_name_is_referenced() {
+        let mut private_fn = sym("lib.rs::is_fixed", "is_fixed", SymbolKind::Method, 4);
+        private_fn.visibility = Visibility::Private;
+        let symbols = vec![private_fn];
+        let edges: Vec<DependencyEdge> = Vec::new();
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+
+        // Without the textual index the graph alone calls it dead.
+        let bare_ctx = DetectionContext {
+            symbols: &symbols,
+            edges: &edges,
+            graph: &graph,
+            config: None,
+            callsites: None,
+        };
+        assert_eq!(DeadOrphanRule.detect(&bare_ctx).len(), 1);
+
+        // A method call on a value elsewhere in the codebase rescues it.
+        let index = CallSiteIndex::build(vec![(
+            std::path::Path::new("main.rs"),
+            "if config.is_fixed(patterns) { }",
+        )]);
+        let ctx = DetectionContext {
+            symbols: &symbols,
+            edges: &edges,
+            graph: &graph,
+            config: None,
+            callsites: Some(&index),
+        };
+        assert!(DeadOrphanRule.detect(&ctx).is_empty());
+    }
+
+    #[test]
+    fn structural_clone_ignores_trait_impls_and_is_medium() {
+        let mut a = sym("lib.rs::A::visit", "A::visit", SymbolKind::Method, 6);
+        let mut b = sym("lib.rs::B::visit", "B::visit", SymbolKind::Method, 6);
+        a.ast_hash = Some("same".into());
+        b.ast_hash = Some("same".into());
+        a.is_trait_impl = true;
+        b.is_trait_impl = true;
+        let symbols = vec![a, b];
+        let edges: Vec<DependencyEdge> = Vec::new();
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = DetectionContext {
+            symbols: &symbols,
+            edges: &edges,
+            graph: &graph,
+            config: None,
+            callsites: None,
+        };
+        assert!(StructuralCloneRule.detect(&ctx).is_empty());
+
+        // Non-trait duplicates are still reported, at Medium severity.
+        let mut symbols = symbols;
+        for s in &mut symbols {
+            s.is_trait_impl = false;
+        }
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = DetectionContext {
+            symbols: &symbols,
+            edges: &edges,
+            graph: &graph,
+            config: None,
+            callsites: None,
+        };
+        let findings = StructuralCloneRule.detect(&ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Medium);
+    }
+
+    #[test]
+    fn cycle_is_its_own_kind_and_scales_with_files_spanned() {
+        let mut a = sym("a.rs::ping", "ping", SymbolKind::Function, 3);
+        let mut b = sym("b.rs::pong", "pong", SymbolKind::Function, 3);
+        a.file_path = PathBuf::from("a.rs");
+        b.file_path = PathBuf::from("b.rs");
+        let symbols = vec![a, b];
+        let edges = vec![
+            edge_of(DependencyEdgeKind::Calls, "a.rs::ping", "pong"),
+            edge_of(DependencyEdgeKind::Calls, "b.rs::pong", "ping"),
+        ];
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = DetectionContext {
+            symbols: &symbols,
+            edges: &edges,
+            graph: &graph,
+            config: None,
+            callsites: None,
+        };
+        let findings = CircularDependencyRule.detect(&ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].kind, SlopKind::Cycle);
+        assert_eq!(findings[0].severity, Severity::High, "two files, unambiguous names");
+        assert_eq!(findings[0].confidence, 0.95);
+    }
+
+    #[test]
+    fn cycle_through_ambiguous_names_is_downgraded() {
+        // Two different `new` symbols: the graph may merge them into a loop.
+        let mut a = sym("a.rs::Config::new", "Config::new", SymbolKind::Method, 3);
+        let mut b = sym("b.rs::Builder::new", "Builder::new", SymbolKind::Method, 3);
+        let other = sym("c.rs::new", "new", SymbolKind::Function, 3);
+        a.file_path = PathBuf::from("a.rs");
+        b.file_path = PathBuf::from("b.rs");
+        let symbols = vec![a, b, other];
+        let edges = vec![
+            edge_of(DependencyEdgeKind::Calls, "a.rs::Config::new", "new"),
+            edge_of(DependencyEdgeKind::Calls, "b.rs::Builder::new", "Config::new"),
+        ];
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = DetectionContext {
+            symbols: &symbols,
+            edges: &edges,
+            graph: &graph,
+            config: None,
+            callsites: None,
+        };
+        for f in CircularDependencyRule.detect(&ctx) {
+            assert_eq!(f.severity, Severity::Low);
+            assert!(f.confidence < 0.95);
+        }
+    }
+
+    #[test]
+    fn score_denominator_is_floored_for_small_projects() {
+        let finding = SlopFinding {
+            kind: SlopKind::Cycle,
+            symbol_id: "x".into(),
+            file_path: PathBuf::from("x.rs"),
+            line: 1,
+            severity: Severity::Critical,
+            confidence: 1.0,
+            title: String::new(),
+            description: String::new(),
+            remediation: String::new(),
+            estimated_lines_saved: 0,
+        };
+        // One Critical in 51 LOC used to saturate at 100; now it is bounded.
+        let small = SlopDetectorEngine::calculate_slop_index(51, std::slice::from_ref(&finding));
+        assert!(small < 100.0 && small > 0.0, "got {small}");
+        assert!(!score_is_reliable(51));
+        assert!(score_is_reliable(MIN_SCORED_LOC));
+        assert_eq!(SlopDetectorEngine::calculate_slop_index(0, &[finding]), 0.0);
     }
 }

@@ -4,7 +4,7 @@ use deslop_inversion::InversionEngine;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn run(path: &Path, output: Option<PathBuf>) -> anyhow::Result<()> {
+pub fn run(path: &Path, output: Option<PathBuf>, llm: bool) -> anyhow::Result<()> {
     println!("{}", "deslop: architecture inversion synthesizer".bold());
     println!("target: {}\n", path.display());
 
@@ -23,6 +23,7 @@ pub fn run(path: &Path, output: Option<PathBuf>) -> anyhow::Result<()> {
         &parsed.edges,
         &graph,
         &findings,
+        llm,
     );
 
     let out_file = output.unwrap_or_else(|| PathBuf::from("ARCHITECTURE_SPEC.md"));
@@ -48,7 +49,7 @@ pub fn run(path: &Path, output: Option<PathBuf>) -> anyhow::Result<()> {
         "Target Components:",
         inverted.target_components.len()
     );
-    print_llm_status();
+    print_llm_status(llm);
     println!("{:<28} {}", "Output Specification:", out_file.display());
     println!("--------------------------------------------------\n");
     println!("Wrote specification to: {}", out_file.display());

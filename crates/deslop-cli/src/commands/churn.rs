@@ -21,6 +21,16 @@ pub fn run(path: &Path, commits: usize) -> anyhow::Result<()> {
                 "Total Commits Analyzed: {}\n",
                 report.total_commits_analyzed.to_string().cyan().bold()
             );
+            if !report.sufficient_history {
+                println!(
+                    "{}\n",
+                    format!(
+                        "Note: fewer than {} commits; churn risk labels are withheld and temporal coupling is not reported.",
+                        deslop_graph::churn::MIN_HISTORY_COMMITS
+                    )
+                    .yellow()
+                );
+            }
 
             println!("{}", "Top Churn Hotspots (High Change Frequency):".bold());
             println!("--------------------------------------------------");

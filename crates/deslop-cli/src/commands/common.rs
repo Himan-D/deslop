@@ -1,5 +1,5 @@
 use colored::*;
-use deslop_detector::SlopDetectorEngine;
+use deslop_detector::{CallSiteIndex, SlopDetectorEngine};
 use deslop_graph::SymbolGraph;
 use deslop_llm::LlmClient;
 use deslop_parser::CodebaseScanner;
@@ -34,6 +34,17 @@ pub fn create_spinner(msg: &'static str) -> ProgressBar {
     pb
 }
 
+/// Builds the textual call-site index from every source file the scanner saw.
+/// Unreadable files are skipped; they can only make the index more permissive.
+pub fn callsite_index(parsed: &deslop_parser::ParsedCodebase) -> CallSiteIndex {
+    let contents: Vec<(&Path, String)> = parsed
+        .files
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok().map(|c| (p.as_path(), c)))
+        .collect();
+    CallSiteIndex::build(contents.iter().map(|(p, c)| (*p, c.as_str())))
+}
+
 pub fn scan_and_analyze(
     path: &Path,
 ) -> anyhow::Result<(
@@ -56,11 +67,13 @@ pub fn scan_and_analyze(
     let arch_config = deslop_core::ArchitectureConfig::load_from_dir(path);
 
     let pb_detect = create_spinner("Executing anti-pattern & slop detector matrix...");
-    let findings = SlopDetectorEngine::analyze_with_config(
+    let callsites = callsite_index(&parsed);
+    let findings = SlopDetectorEngine::analyze_full(
         &parsed.symbols,
         &parsed.edges,
         &graph,
         arch_config.as_ref(),
+        Some(&callsites),
     );
     pb_detect.finish_and_clear();
 
@@ -68,14 +81,39 @@ pub fn scan_and_analyze(
     Ok((parsed, graph, findings, elapsed))
 }
 
-pub fn print_llm_status() {
+/// Prints the state of the optional LLM. The LLM is off unless the command was
+/// run with an explicit opt-in flag, because it sends finding text to a
+/// third-party provider.
+pub fn print_llm_status(opted_in: bool) {
+    if !opted_in {
+        println!(
+            "{:<28} {}",
+            "AI Reasoning Engine:".bold(),
+            "off (opt in with --explain / --llm)".dimmed()
+        );
+        return;
+    }
     let llm = LlmClient::auto_detect();
     let status_str = match llm.provider {
-        deslop_llm::LlmProvider::Gemini => "Gemini API (active)".green().bold(),
-        deslop_llm::LlmProvider::OpenAI => "OpenAI API (active)".green().bold(),
-        deslop_llm::LlmProvider::Anthropic => "Anthropic API (active)".green().bold(),
-        deslop_llm::LlmProvider::OpenRouter => "OpenRouter API (active)".green().bold(),
-        deslop_llm::LlmProvider::Offline => "Offline Deterministic Mode (no API key)".yellow(),
+        deslop_llm::LlmProvider::Gemini => "Gemini API (active; finding text is sent to Google)"
+            .green()
+            .bold(),
+        deslop_llm::LlmProvider::OpenAI => "OpenAI API (active; finding text is sent to OpenAI)"
+            .green()
+            .bold(),
+        deslop_llm::LlmProvider::Anthropic => {
+            "Anthropic API (active; finding text is sent to Anthropic)"
+                .green()
+                .bold()
+        }
+        deslop_llm::LlmProvider::OpenRouter => {
+            "OpenRouter API (active; finding text is sent to OpenRouter)"
+                .green()
+                .bold()
+        }
+        deslop_llm::LlmProvider::Offline => {
+            "requested, but no API key is set: deterministic output".yellow()
+        }
     };
     println!("{:<28} {}", "AI Reasoning Engine:".bold(), status_str);
 }
