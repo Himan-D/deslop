@@ -22,11 +22,17 @@ pub struct GitHotspot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChurnAnalysisReport {
     pub total_commits_analyzed: usize,
+    /// False when history is too short for churn labels to mean anything.
+    pub sufficient_history: bool,
     pub top_hotspots: Vec<GitHotspot>,
     pub temporal_couplings: Vec<TemporalCoupling>,
 }
 
 pub struct GitChurnAnalyzer;
+
+/// Below this many commits, relative churn thresholds are noise: a file in
+/// 4 of 11 commits is not a hotspot. Labels are withheld instead.
+pub const MIN_HISTORY_COMMITS: usize = 30;
 
 impl GitChurnAnalyzer {
     /// Analyzes git history to extract commit frequency and hidden temporal couplings
@@ -80,10 +86,13 @@ impl GitChurnAnalyzer {
             }
         }
 
+        let sufficient_history = total_commits >= MIN_HISTORY_COMMITS;
         let mut hotspots: Vec<GitHotspot> = file_counts
             .iter()
             .map(|(file, &count)| {
-                let risk = if count > total_commits / 3 {
+                let risk = if !sufficient_history {
+                    format!("Insufficient history (<{} commits)", MIN_HISTORY_COMMITS)
+                } else if count > total_commits / 3 {
                     "Critical Churn Hotspot".to_string()
                 } else if count > total_commits / 8 {
                     "Moderate Churn".to_string()
@@ -119,7 +128,7 @@ impl GitChurnAnalyzer {
 
         let mut temporal_couplings = Vec::new();
         for ((file_a, file_b), co_count) in co_changes {
-            if co_count >= 3 {
+            if sufficient_history && co_count >= 3 {
                 let count_a = *file_counts.get(&file_a).unwrap_or(&1);
                 let count_b = *file_counts.get(&file_b).unwrap_or(&1);
                 let min_count = count_a.min(count_b) as f64;
@@ -143,6 +152,7 @@ impl GitChurnAnalyzer {
 
         Some(ChurnAnalysisReport {
             total_commits_analyzed: total_commits,
+            sufficient_history,
             top_hotspots: hotspots.into_iter().take(15).collect(),
             temporal_couplings: temporal_couplings.into_iter().take(10).collect(),
         })

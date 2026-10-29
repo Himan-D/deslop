@@ -53,7 +53,13 @@ target/release/deslop scan ./path/to/codebase
 # Machine-readable scan output for CI pipelines and coding agents
 target/release/deslop scan ./path/to/codebase --format json
 
-# Explain top findings (LLM narrative when a key is set, deterministic otherwise)
+# SARIF 2.1.0 for GitHub code scanning and other CI tooling
+target/release/deslop scan ./path/to/codebase --format sarif
+
+# Report only findings this branch introduced relative to a git ref
+target/release/deslop scan ./path/to/codebase --base origin/main
+
+# Explain top findings (uses an LLM only if a provider key is set; sends finding text to it)
 target/release/deslop scan ./path/to/codebase --explain
 
 # De-loop circular dependencies with actionable refactor plans
@@ -61,6 +67,9 @@ target/release/deslop deloop ./path/to/codebase
 
 # Invert codebase into a formal specification with Mermaid diagrams
 target/release/deslop invert ./path/to/codebase -o ARCHITECTURE_SPEC.md
+
+# Same, plus an LLM narrative (sends a codebase summary to the provider)
+target/release/deslop invert ./path/to/codebase -o ARCHITECTURE_SPEC.md --llm
 
 # Call stack depth profiling, recursion risk analysis, and Stack Tax calculation
 target/release/deslop profile ./path/to/codebase
@@ -109,6 +118,9 @@ target/release/deslop churn ./path/to/codebase --commits 500
 
 # CI/CD Quality Gate
 target/release/deslop check ./path/to/codebase --max-slop 25
+
+# Pull-request gate: fail only on cycles or High/Critical findings this branch adds
+target/release/deslop check ./path/to/codebase --base origin/main
 ```
 
 ---
@@ -148,7 +160,7 @@ When a violation is detected, `deslop scan` prints a `Critical` finding:
 
 Deslop computes **100% of graph metrics, AST parsing, and cycle paths locally in Rust at zero token cost**.
 
-If you supply an API key in your environment, Deslop uses your LLM for high-level architectural distillation and refactoring rationales:
+Deslop calls an LLM **only when you opt in**: `scan --explain`, `deloop --explain`, or `invert --llm`, and only if a provider key is set in the environment. The opted-in command prints which provider receives data (finding text, or a codebase summary for `invert`). Keys are read from:
 
 ```bash
 # Supports any of:
@@ -161,7 +173,42 @@ export ANTHROPIC_API_KEY="your-anthropic-key"
 export OPENROUTER_API_KEY="your-openrouter-key"
 ```
 
-If no key is present, Deslop runs in **Offline Deterministic Mode** with zero external network calls.
+Without the flag, or without a key, Deslop runs fully offline with zero external network calls.
+
+---
+
+## Scoring, Confidence, and Limits
+
+The Slop Index is a heuristic, not a measurement of quality. It is a weighted count of findings per 1,000 lines of code (Low 1.5, Medium 4, High 8, Critical 15), capped at 100.
+
+- **Small projects are low-confidence.** The denominator is floored at 1,000 LOC, so a few findings in a tiny project cannot saturate the score. `scan` marks the score as low confidence below that size, and JSON output reports `score_reliable: false`.
+- **Cycles are graded by reach.** A loop inside one file is Medium. A loop across two files is High. A loop across three or more files is Critical. Loops that pass through names shared by several symbols are downgraded to Low with a "verify first" note, because the graph resolves calls by bare name and can merge unrelated functions (`new`, `default`).
+- **Dead code is conservative.** A symbol is reported dead only if its name never appears outside its own definition anywhere in the codebase. Library public API, test code, benchmarks, Go `init()`, and fixtures are never reported. This avoids false positives at the cost of recall.
+- **Public facades and constructors are not tollbooths.** Public functions and `new`/`default`/`from`/`with_*` style constructors are intentional API surface.
+- **Clones are Medium.** Duplicate logic is real but usually low-value compared with cycles and dead code. Trait impls are skipped, since they repeat by contract.
+- **Measured on open-source repos:** see [`docs/CALIBRATION.md`](docs/CALIBRATION.md) for before/after numbers and the spot-check results.
+
+### Acting on findings
+
+- `deslop prune` writes real unified diffs. It only deletes symbols that no other file references. Apply the patch with `git apply`.
+- `deslop apply --verify "<cmd>"` writes the same changes and rolls every touched file back if the command fails. Without `--verify` or `--yes` it previews and writes nothing.
+- A symbol referenced from another file is reported as skipped, not rewritten. Automatic cross-file rewriting is not implemented.
+- `deslop deloop` is advisory. It names the cut edge and steps; it does not move code. Breaking a cycle usually requires type-aware moves that the text rewriter cannot do safely.
+
+### Using Deslop in CI
+
+```yaml
+- uses: actions/checkout@v4
+  with: { fetch-depth: 0 }                       # --base needs the base ref's history
+- run: deslop check . --base origin/main        # fails on new cycles or new High/Critical findings
+- run: deslop scan . --format sarif > deslop.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  with: { sarif_file: deslop.sarif }
+```
+
+(Assumes `deslop` is on `PATH`, for example from `cargo install --path crates/deslop-cli`.)
+
+`--base` checks out the ref with `git archive` into a temp directory and matches findings by kind, relative path, and title. Line numbers are ignored, so edits elsewhere in a file do not make old findings look new.
 
 ---
 

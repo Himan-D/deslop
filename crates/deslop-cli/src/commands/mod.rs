@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod baseline;
 pub mod capacity;
 pub mod check;
 pub mod churn;
@@ -12,6 +13,7 @@ pub mod mcp_cmd;
 pub mod profile;
 pub mod prune;
 pub mod scan;
+pub mod sarif;
 pub mod scip;
 pub mod testgen;
 pub mod trace;

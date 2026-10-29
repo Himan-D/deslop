@@ -100,19 +100,20 @@ impl Symbol {
     }
 
     /// Returns true if this symbol is a test entrypoint: `#[test]`-attributed,
-    /// named `test_*`, or living under a `tests/` directory / `test_*` file.
+    /// named `test_*`, living under a `tests/` directory (see [`TEST_PATH_ATTR`]),
+    /// or in a `test_*` / `*_test` file.
+    ///
+    /// Directory membership is decided by the scanner relative to the scan root,
+    /// never from the absolute path: a project checked out under `~/tests/app`
+    /// must not have every symbol classified as test code.
     pub fn is_test_entrypoint(&self) -> bool {
         if self.attributes.iter().any(|a| a == "test") {
             return true;
         }
-        if self.name.starts_with("test_") || self.name.contains("::test_") {
+        if self.attributes.iter().any(|a| a == TEST_PATH_ATTR) {
             return true;
         }
-        if self
-            .file_path
-            .components()
-            .any(|c| c.as_os_str() == "tests" || c.as_os_str() == "__tests__")
-        {
+        if self.name.starts_with("test_") || self.name.contains("::test_") {
             return true;
         }
         self.file_path
@@ -122,6 +123,16 @@ impl Symbol {
                 stem.starts_with("test_") || stem.ends_with("_test")
             })
             .unwrap_or(false)
+    }
+
+    /// Symbols the runtime or a harness calls without a static reference:
+    /// Go `init()`, and symbols in benchmark, example, or fixture directories
+    /// (see [`AUX_PATH_ATTR`]).
+    pub fn is_implicit_entrypoint(&self) -> bool {
+        if self.name == "init" || self.name.ends_with("::init") {
+            return true;
+        }
+        self.attributes.iter().any(|a| a == AUX_PATH_ATTR)
     }
 }
 
@@ -189,6 +200,14 @@ pub struct Import {
     pub is_glob: bool,
 }
 
+/// Attribute the scanner adds to symbols under a `tests/` or `__tests__/`
+/// directory, relative to the scan root.
+pub const TEST_PATH_ATTR: &str = "deslop:test-path";
+
+/// Attribute the scanner adds to symbols under `benches/`, `bench/`,
+/// `examples/`, `testdata/`, or `fixtures/`, relative to the scan root.
+pub const AUX_PATH_ATTR: &str = "deslop:aux-path";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SlopKind {
     /// Wrapper function/class that only passes calls through with zero added value
@@ -199,8 +218,11 @@ pub enum SlopKind {
     DeadOrphan,
     /// Structurally duplicate logic across different symbols
     StructuralClone,
-    /// Layers of barrel re-exports creating circular or deep indirection
+    /// Layers of barrel re-exports creating circular or deep indirection.
+    /// Reserved: no longer emitted for dependency cycles (see `Cycle`).
     BarrelBloat,
+    /// Circular dependency loop between symbols (see `deloop` for the cut edge)
+    Cycle,
     /// God object with outsized fan-in/fan-out and low cohesion
     GodObject,
     /// Architectural layer or forbidden boundary rule violation (ArchUnit-style)
@@ -338,8 +360,11 @@ mod tests {
         assert!(test_symbol("parses", "lib.rs", vec!["test".to_string()]).is_test_entrypoint());
         // test_* naming.
         assert!(test_symbol("test_parse", "lib.rs", vec![]).is_test_entrypoint());
-        // tests/ directory and test file stems.
-        assert!(test_symbol("helper", "tests/integration.rs", vec![]).is_test_entrypoint());
+        // Directory membership comes from the scanner (root-relative attribute),
+        // so the bare path alone no longer decides.
+        assert!(test_symbol("helper", "lib.rs", vec![TEST_PATH_ATTR.to_string()]).is_test_entrypoint());
+        assert!(!test_symbol("helper", "tests/integration.rs", vec![]).is_test_entrypoint());
+        // Test file stems are root-independent.
         assert!(test_symbol("helper", "src/parser_test.rs", vec![]).is_test_entrypoint());
         // Ordinary private helpers are not tests.
         assert!(!test_symbol("helper", "src/lib.rs", vec![]).is_test_entrypoint());

@@ -354,11 +354,13 @@ impl McpServer {
         let graph =
             SymbolGraph::from_parsed_with_imports(&parsed.symbols, &parsed.edges, &parsed.imports);
         let arch_config = deslop_core::ArchitectureConfig::load_from_dir(path);
-        let findings = SlopDetectorEngine::analyze_with_config(
+        let callsites = crate::commands::common::callsite_index(&parsed);
+        let findings = SlopDetectorEngine::analyze_full(
             &parsed.symbols,
             &parsed.edges,
             &graph,
             arch_config.as_ref(),
+            Some(&callsites),
         );
         Ok((parsed, graph, findings))
     }
@@ -568,42 +570,32 @@ impl McpServer {
     }
 
     fn call_prune_diff(path: &Path) -> anyhow::Result<String> {
-        let (_parsed, _graph, findings) = Self::scan_codebase(path)?;
-        let prunable: Vec<_> = findings
-            .iter()
-            .filter(|f| {
-                matches!(
-                    f.kind,
-                    deslop_core::SlopKind::DeadOrphan | deslop_core::SlopKind::TollboothWrapper
-                )
-            })
-            .collect();
-
-        if prunable.is_empty() {
+        let (parsed, _graph, findings) = Self::scan_codebase(path)?;
+        let callsites = crate::commands::common::callsite_index(&parsed);
+        let set = deslop_inversion::RefactorEngine::rewrite_set(
+            &findings,
+            &parsed.symbols,
+            &callsites,
+        )?;
+        if set.rewrites.is_empty() {
             return Ok(
-                "Codebase is clean. Zero prunable tollbooths or dead code found.".to_string(),
+                "Codebase is clean. Zero safely prunable tollbooths or dead code found.".to_string(),
             );
         }
-
-        let mut patch = String::new();
-        patch.push_str("# Deslop Refactoring Patch\n");
-        patch.push_str(&format!("# Target: {}\n", path.display()));
-        patch.push_str(&format!("# Prunable Items: {}\n\n", prunable.len()));
-
-        for p in &prunable {
-            patch.push_str(&format!("--- a/{}\n", p.file_path.display()));
-            patch.push_str(&format!("+++ b/{}\n", p.file_path.display()));
-            patch.push_str(&format!(
-                "@@ -{},{} +{},0 @@ # Prune {}\n",
-                p.line, p.estimated_lines_saved, p.line, p.title
-            ));
-            patch.push_str(&format!(
-                "- // Deleted {} (~{} LOC)\n\n",
-                p.title, p.estimated_lines_saved
+        let mut out = crate::commands::prune::unified_patch(path, &set.rewrites);
+        if !set.plan.skipped.is_empty() {
+            out.push_str(&format!(
+                "\n# {} finding(s) skipped (referenced from other files): {}\n",
+                set.plan.skipped.len(),
+                set.plan
+                    .skipped
+                    .iter()
+                    .map(|s| s.symbol_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
-
-        Ok(patch)
+        Ok(out)
     }
 
     fn call_scip(path: &Path) -> anyhow::Result<String> {

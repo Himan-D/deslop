@@ -1,6 +1,8 @@
 use crate::cache::{CachedFileEntry, CodebaseCache};
 use crate::{FileParser, RustParser, UniversalParser};
-use deslop_core::{CodebaseStats, DependencyEdge, Import, Language, Symbol};
+use deslop_core::{
+    CodebaseStats, DependencyEdge, Import, Language, Symbol, AUX_PATH_ATTR, TEST_PATH_ATTR,
+};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs;
@@ -9,6 +11,8 @@ use walkdir::WalkDir;
 
 pub struct ParsedCodebase {
     pub root_dir: PathBuf,
+    /// Every source file the scanner considered (including files with no symbols).
+    pub files: Vec<PathBuf>,
     pub symbols: Vec<Symbol>,
     pub edges: Vec<DependencyEdge>,
     pub imports: HashMap<PathBuf, Vec<Import>>,
@@ -136,6 +140,7 @@ impl CodebaseScanner {
         // Phase 3: Fast linear aggregation
         let mut new_cache = CodebaseCache::default();
         let total_files = parsed_entries.len();
+        let files: Vec<PathBuf> = parsed_entries.iter().map(|(p, _)| p.clone()).collect();
         let mut symbols = Vec::new();
         let mut edges = Vec::new();
         let mut imports: HashMap<PathBuf, Vec<Import>> = HashMap::new();
@@ -145,7 +150,14 @@ impl CodebaseScanner {
         for (path, entry) in parsed_entries {
             total_loc += entry.loc;
             *lang_counts.entry(entry.language).or_insert(0) += 1;
-            symbols.extend(entry.symbols.iter().cloned());
+            // Directory roles are judged relative to the scan root, so an
+            // absolute parent such as `~/tests/app` cannot taint every file.
+            let flags = path_role_attributes(&path, &root_path);
+            symbols.extend(entry.symbols.iter().map(|s| {
+                let mut s = s.clone();
+                s.attributes.extend(flags.iter().cloned());
+                s
+            }));
             edges.extend(entry.edges.iter().cloned());
             if !entry.imports.is_empty() {
                 imports.insert(path.clone(), entry.imports.clone());
@@ -172,10 +184,52 @@ impl CodebaseScanner {
 
         Ok(ParsedCodebase {
             root_dir: root_path,
+            files,
             symbols,
             edges,
             imports,
             stats,
         })
+    }
+}
+
+/// Attributes describing the directory role of `path` relative to `root`.
+fn path_role_attributes(path: &Path, root: &Path) -> Vec<String> {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let mut attrs = Vec::new();
+    if rel
+        .components()
+        .any(|c| matches!(c.as_os_str().to_str(), Some("tests") | Some("__tests__")))
+    {
+        attrs.push(TEST_PATH_ATTR.to_string());
+    }
+    if rel.components().any(|c| {
+        matches!(
+            c.as_os_str().to_str(),
+            Some("benches") | Some("bench") | Some("examples") | Some("testdata") | Some("fixtures")
+        )
+    }) {
+        attrs.push(AUX_PATH_ATTR.to_string());
+    }
+    attrs
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+
+    #[test]
+    fn roles_are_relative_to_the_scan_root() {
+        // A project under a `tests` parent is not itself test code.
+        let root = Path::new("/home/me/tests/app");
+        assert!(path_role_attributes(&root.join("src/lib.rs"), root).is_empty());
+        assert_eq!(
+            path_role_attributes(&root.join("tests/it.rs"), root),
+            vec![TEST_PATH_ATTR.to_string()]
+        );
+        assert_eq!(
+            path_role_attributes(&root.join("benches/b.rs"), root),
+            vec![AUX_PATH_ATTR.to_string()]
+        );
     }
 }

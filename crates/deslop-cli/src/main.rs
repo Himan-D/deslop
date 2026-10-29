@@ -27,13 +27,16 @@ enum Commands {
         #[arg(short, long)]
         detailed: bool,
 
-        /// Explain top findings with actionable narrative (LLM when a key is set, deterministic otherwise)
+        /// Explain top findings. Uses an LLM only if a provider key is set, and then sends finding text to that provider
         #[arg(short, long)]
         explain: bool,
 
-        /// Output format: table or json
+        /// Output format: table, json, or sarif (for GitHub code scanning)
         #[arg(long, default_value = "table")]
         format: String,
+        /// Report only findings introduced since this git ref (e.g. origin/main)
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
     },
 
     /// Analyze and resolve circular dependency loops using top-tier de-looping strategies
@@ -42,7 +45,7 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Explain each loop with actionable narrative (LLM when a key is set, deterministic otherwise)
+        /// Explain each loop. Uses an LLM only if a provider key is set, and then sends loop text to that provider
         #[arg(short, long)]
         explain: bool,
     },
@@ -56,6 +59,9 @@ enum Commands {
         /// Output markdown file path (defaults to ARCHITECTURE_SPEC.md)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Send a codebase summary to the configured LLM for narrative synthesis
+        #[arg(long)]
+        llm: bool,
     },
 
     /// Preview unified diff patches to prune dead code and collapse tollbooth wrappers
@@ -121,15 +127,19 @@ enum Commands {
         format: String,
     },
 
-    /// CI gate check: fails if codebase exceeds slop threshold or contains cycles
+    /// CI gate. Without --base: fails on slop above --max-slop or any cycle.
+    /// With --base REF: fails only on cycles or High/Critical findings this change adds.
     Check {
         /// Target directory path
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Maximum allowable slop index (0.0 to 100.0)
-        #[arg(long, default_value_t = 25.0)]
-        max_slop: f64,
+        /// Maximum allowable slop index (0.0 to 100.0); defaults to 25 without --base
+        #[arg(long)]
+        max_slop: Option<f64>,
+        /// Gate only on findings introduced since this git ref (e.g. origin/main)
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
     },
 
     /// Deep architectural analysis: package coupling, main sequence distance, and dominator bottlenecks
@@ -210,9 +220,10 @@ fn main() -> anyhow::Result<()> {
             detailed,
             explain,
             format,
-        } => commands::scan::run(&path, detailed, explain, &format),
+            base,
+        } => commands::scan::run(&path, detailed, explain, &format, base.as_deref()),
         Commands::Deloop { path, explain } => commands::deloop::run(&path, explain),
-        Commands::Invert { path, output } => commands::invert::run(&path, output),
+        Commands::Invert { path, output, llm } => commands::invert::run(&path, output, llm),
         Commands::Prune { path, diff, output } => commands::prune::run(&path, diff, output),
         Commands::Apply { path, verify, yes } => commands::apply::run(&path, verify, yes),
         Commands::Profile { path, stacks } => commands::profile::run(&path, stacks),
@@ -222,7 +233,11 @@ fn main() -> anyhow::Result<()> {
             max_nodes,
             format,
         } => commands::graph::run(&path, max_nodes, &format),
-        Commands::Check { path, max_slop } => commands::check::run(&path, max_slop),
+        Commands::Check {
+            path,
+            max_slop,
+            base,
+        } => commands::check::run(&path, max_slop, base.as_deref()),
         Commands::Deep { path } => commands::deep::run(&path),
         Commands::Tui { path } => commands::tui_cmd::run(&path),
         Commands::Scip { path, output } => commands::scip::run(&path, output),

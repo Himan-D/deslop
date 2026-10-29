@@ -61,7 +61,7 @@ impl LlmClient {
                 return Self {
                     provider: LlmProvider::Anthropic,
                     api_key: Some(key),
-                    model: "claude-3-5-sonnet-20241022".to_string(),
+                    model: "claude-sonnet-5-5".to_string(),
                     http_client,
                 };
             }

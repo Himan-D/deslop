@@ -42,6 +42,7 @@ fn test_deloop_and_inversion_pipeline() {
         &parsed.edges,
         &graph,
         &findings,
+        false,
     );
 
     assert!(inverted.original_loc > inverted.projected_loc);
@@ -54,6 +55,7 @@ fn test_deloop_and_inversion_pipeline() {
 
 #[test]
 fn test_rollback_on_failed_verification() {
+    use deslop_detector::CallSiteIndex;
     use deslop_inversion::RefactorEngine;
     use std::fs;
 
@@ -66,13 +68,21 @@ fn test_rollback_on_failed_verification() {
     let scanner = CodebaseScanner::new();
     let parsed = scanner.scan(&temp_dir).unwrap();
     let graph = SymbolGraph::from_parsed(&parsed.symbols, &parsed.edges);
-    let findings = SlopDetectorEngine::analyze(&parsed.symbols, &parsed.edges, &graph);
+    let callsites = CallSiteIndex::build(vec![(test_file.as_path(), original_text)]);
+    let findings = SlopDetectorEngine::analyze_full(
+        &parsed.symbols,
+        &parsed.edges,
+        &graph,
+        None,
+        Some(&callsites),
+    );
 
     // Provide a verification command that intentionally fails
     let res = RefactorEngine::apply(
         &temp_dir,
         &findings,
         &parsed.symbols,
+        &callsites,
         Some("exit 1"), // Intentionally failing verification command
     )
     .unwrap();

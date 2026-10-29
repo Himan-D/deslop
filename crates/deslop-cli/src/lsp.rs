@@ -153,7 +153,14 @@ impl LspServer {
                 &parsed.edges,
                 &parsed.imports,
             );
-            let findings = SlopDetectorEngine::analyze(&parsed.symbols, &parsed.edges, &graph);
+            let callsites = crate::commands::common::callsite_index(&parsed);
+            let findings = SlopDetectorEngine::analyze_full(
+                &parsed.symbols,
+                &parsed.edges,
+                &graph,
+                None,
+                Some(&callsites),
+            );
 
             // Group findings by file path
             let mut file_diags: std::collections::HashMap<String, Vec<Value>> =
