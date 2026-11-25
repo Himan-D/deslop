@@ -1,5 +1,8 @@
 name: 'Deslop Architectural Quality Gate'
 description: 'Run deslop check or scan to gate on slop, architectural debt, and dependency cycles, or export SARIF/JSON.'
+branding:
+  icon: 'shield'
+  color: 'orange'
 
 inputs:
   path:
