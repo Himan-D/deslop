@@ -1,6 +1,7 @@
 use crate::{DetectionContext, DetectionRule};
-use deslop_core::{Severity, SlopFinding, SlopKind};
-use std::collections::HashMap;
+use deslop_core::{ArchitectureConfig, DependencyEdgeKind, Severity, SlopFinding, SlopKind};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 /// Matches `path_or_module` against `pattern`.
 ///
@@ -98,14 +99,20 @@ impl DetectionRule for ArchitectureViolationRule {
             return Vec::new();
         };
         let mut findings = Vec::new();
+        let mut reported_pairs: HashSet<(String, String)> = HashSet::new();
 
-        let sym_files: HashMap<&str, (&std::path::Path, usize)> = ctx
+        let sym_files: HashMap<&str, (&Path, usize)> = ctx
             .symbols
             .iter()
             .map(|s| (s.id.as_str(), (s.file_path.as_path(), s.span.start_line)))
             .collect();
 
-        for edge in ctx.edges {
+        // Symbol-level edges first (preferred for exact symbol_id and line).
+        for edge in ctx
+            .edges
+            .iter()
+            .filter(|e| e.kind != DependencyEdgeKind::Imports)
+        {
             let from_path = sym_files
                 .get(edge.from_symbol.as_str())
                 .map(|(p, _)| p.to_string_lossy())
@@ -119,63 +126,271 @@ impl DetectionRule for ArchitectureViolationRule {
                 .map(|(p, l)| (p.to_path_buf(), *l))
                 .unwrap_or_default();
 
-            if config.allow_exceptions.iter().any(|ex| {
-                matches_pattern(&from_path, &ex.from) && matches_pattern(&to_path, &ex.to)
-            }) {
+            if check_edge_violations(
+                config,
+                &from_path,
+                &to_path,
+                &edge.from_symbol,
+                &file_path,
+                line,
+                &mut findings,
+            ) {
+                reported_pairs.insert((from_path.into_owned(), to_path.into_owned()));
+            }
+        }
+
+        // Raw file-to-module Imports edges (from universal_parser / rust_parser).
+        for edge in ctx
+            .edges
+            .iter()
+            .filter(|e| e.kind == DependencyEdgeKind::Imports)
+        {
+            let pair = (edge.from_symbol.clone(), edge.to_symbol.clone());
+            if reported_pairs.contains(&pair) {
                 continue;
             }
 
-            // Check forbidden rules
-            for rule in &config.forbidden_rules {
-                if matches_pattern(&from_path, &rule.from) && matches_pattern(&to_path, &rule.to) {
-                    let desc = rule.description.clone().unwrap_or_else(|| {
-                        format!("Dependency from '{}' to '{}' is explicitly forbidden by architecture policy.", rule.from, rule.to)
-                    });
-                    findings.push(SlopFinding {
-                        kind: SlopKind::LayerViolation,
-                        symbol_id: edge.from_symbol.clone(),
-                        file_path: file_path.clone(),
-                        line,
-                        severity: Severity::Critical,
-                        confidence: 1.0,
-                        title: format!("Architectural Rule Violation: {} -> {}", rule.from, rule.to),
-                        description: desc,
-                        remediation: "Invert dependency or extract a common interface into a lower domain layer.".to_string(),
-                        estimated_lines_saved: 0,
-                    });
-                }
-            }
-
-            // Check strict monotonic layer ordering
-            if !config.layers.is_empty() {
-                let from_layer_idx = config
-                    .layers
-                    .iter()
-                    .position(|l| matches_pattern(&from_path, l));
-                let to_layer_idx = config
-                    .layers
-                    .iter()
-                    .position(|l| matches_pattern(&to_path, l));
-
-                if let (Some(f_idx), Some(t_idx)) = (from_layer_idx, to_layer_idx) {
-                    if f_idx > t_idx {
-                        findings.push(SlopFinding {
-                            kind: SlopKind::LayerViolation,
-                            symbol_id: edge.from_symbol.clone(),
-                            file_path: file_path.clone(),
-                            line,
-                            severity: Severity::Critical,
-                            confidence: 1.0,
-                            title: format!("Layer Inversion: Layer '{}' imports upper Layer '{}'", config.layers[f_idx], config.layers[t_idx]),
-                            description: format!("Module '{}' in layer '{}' illegally depends on '{}' in higher layer '{}'. Strict monotonic DAG violated.", from_path, config.layers[f_idx], to_path, config.layers[t_idx]),
-                            remediation: "Apply Dependency Inversion Principle (DIP): higher layers should depend on abstractions in lower layers.".to_string(),
-                            estimated_lines_saved: 0,
-                        });
-                    }
-                }
+            let file_path = PathBuf::from(&edge.from_symbol);
+            if check_edge_violations(
+                config,
+                &edge.from_symbol,
+                &edge.to_symbol,
+                &edge.from_symbol,
+                &file_path,
+                1,
+                &mut findings,
+            ) {
+                reported_pairs.insert(pair);
             }
         }
 
         findings
+    }
+}
+
+fn check_edge_violations(
+    config: &ArchitectureConfig,
+    from_path: &str,
+    to_path: &str,
+    symbol_id: &str,
+    file_path: &Path,
+    line: usize,
+    findings: &mut Vec<SlopFinding>,
+) -> bool {
+    if config.allow_exceptions.iter().any(|ex| {
+        matches_pattern(from_path, &ex.from) && matches_pattern(to_path, &ex.to)
+    }) {
+        return false;
+    }
+
+    let before = findings.len();
+
+    // Check forbidden rules
+    for rule in &config.forbidden_rules {
+        if matches_pattern(from_path, &rule.from) && matches_pattern(to_path, &rule.to) {
+            let desc = rule.description.clone().unwrap_or_else(|| {
+                format!(
+                    "Dependency from '{}' to '{}' is explicitly forbidden by architecture policy.",
+                    rule.from, rule.to
+                )
+            });
+            findings.push(SlopFinding {
+                kind: SlopKind::LayerViolation,
+                symbol_id: symbol_id.to_string(),
+                file_path: file_path.to_path_buf(),
+                line,
+                severity: Severity::Critical,
+                confidence: 1.0,
+                title: format!("Architectural Rule Violation: {} -> {}", rule.from, rule.to),
+                description: desc,
+                remediation: "Invert dependency or extract a common interface into a lower domain layer.".to_string(),
+                estimated_lines_saved: 0,
+            });
+        }
+    }
+
+    // Check strict monotonic layer ordering
+    if !config.layers.is_empty() {
+        let from_layer_idx = config
+            .layers
+            .iter()
+            .position(|l| matches_pattern(from_path, l));
+        let to_layer_idx = config
+            .layers
+            .iter()
+            .position(|l| matches_pattern(to_path, l));
+
+        if let (Some(f_idx), Some(t_idx)) = (from_layer_idx, to_layer_idx) {
+            if f_idx > t_idx {
+                findings.push(SlopFinding {
+                    kind: SlopKind::LayerViolation,
+                    symbol_id: symbol_id.to_string(),
+                    file_path: file_path.to_path_buf(),
+                    line,
+                    severity: Severity::Critical,
+                    confidence: 1.0,
+                    title: format!(
+                        "Layer Inversion: Layer '{}' imports upper Layer '{}'",
+                        config.layers[f_idx], config.layers[t_idx]
+                    ),
+                    description: format!(
+                        "Module '{}' in layer '{}' illegally depends on '{}' in higher layer '{}'. Strict monotonic DAG violated.",
+                        from_path, config.layers[f_idx], to_path, config.layers[t_idx]
+                    ),
+                    remediation: "Apply Dependency Inversion Principle (DIP): higher layers should depend on abstractions in lower layers.".to_string(),
+                    estimated_lines_saved: 0,
+                });
+            }
+        }
+    }
+
+    findings.len() > before
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deslop_core::{
+        AllowException, DependencyEdge, ForbiddenRule, SourceSpan, Symbol, SymbolKind, Visibility,
+    };
+    use deslop_graph::SymbolGraph;
+
+    fn make_ctx<'a>(
+        symbols: &'a [Symbol],
+        edges: &'a [DependencyEdge],
+        graph: &'a SymbolGraph,
+        config: &'a ArchitectureConfig,
+    ) -> DetectionContext<'a> {
+        DetectionContext {
+            symbols,
+            edges,
+            graph,
+            config: Some(config),
+            callsites: None,
+        }
+    }
+
+    #[test]
+    fn raw_imports_edge_triggers_forbidden_rule() {
+        let symbols = Vec::new();
+        let edges = vec![DependencyEdge {
+            from_symbol: "src/domain/order.ts".to_string(),
+            to_symbol: "prisma".to_string(),
+            kind: DependencyEdgeKind::Imports,
+            count: 1,
+        }];
+        let config = ArchitectureConfig {
+            forbidden_rules: vec![ForbiddenRule {
+                from: "src/domain/**".into(),
+                to: "prisma".into(),
+                description: None,
+            }],
+            ..Default::default()
+        };
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = make_ctx(&symbols, &edges, &graph, &config);
+
+        let findings = ArchitectureViolationRule.detect(&ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].kind, SlopKind::LayerViolation);
+        assert_eq!(findings[0].severity, Severity::Critical);
+        assert_eq!(findings[0].confidence, 1.0);
+        assert_eq!(findings[0].symbol_id, "src/domain/order.ts");
+        assert_eq!(findings[0].file_path, PathBuf::from("src/domain/order.ts"));
+    }
+
+    #[test]
+    fn allow_exceptions_suppresses_raw_import_violation() {
+        let symbols = Vec::new();
+        let edges = vec![
+            DependencyEdge {
+                from_symbol: "src/domain/legacy.ts".to_string(),
+                to_symbol: "prisma".to_string(),
+                kind: DependencyEdgeKind::Imports,
+                count: 1,
+            },
+            DependencyEdge {
+                from_symbol: "src/domain/order.ts".to_string(),
+                to_symbol: "prisma".to_string(),
+                kind: DependencyEdgeKind::Imports,
+                count: 1,
+            },
+        ];
+        let config = ArchitectureConfig {
+            forbidden_rules: vec![ForbiddenRule {
+                from: "src/domain/**".into(),
+                to: "prisma".into(),
+                description: None,
+            }],
+            allow_exceptions: vec![AllowException {
+                from: "src/domain/legacy.ts".into(),
+                to: "prisma".into(),
+                reason: "Legacy adapter".into(),
+            }],
+            ..Default::default()
+        };
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = make_ctx(&symbols, &edges, &graph, &config);
+
+        let findings = ArchitectureViolationRule.detect(&ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].symbol_id, "src/domain/order.ts");
+    }
+
+    fn make_symbol(id: &str, name: &str, file_path: &str, line: usize) -> Symbol {
+        Symbol {
+            id: id.to_string(),
+            name: name.to_string(),
+            kind: SymbolKind::Function,
+            file_path: PathBuf::from(file_path),
+            span: SourceSpan {
+                start_line: line,
+                end_line: line + 5,
+                start_col: 0,
+                end_col: 1,
+            },
+            visibility: Visibility::Public,
+            loc: 5,
+            cyclomatic_complexity: 1,
+            doc: None,
+            signature: String::new(),
+            is_pure_hint: false,
+            ast_hash: None,
+            attributes: Vec::new(),
+            is_trait_impl: false,
+        }
+    }
+
+    #[test]
+    fn raw_imports_edge_triggers_layer_inversion_and_deduplicates_with_symbol_edge() {
+        let symbols = vec![
+            make_symbol("src/domain/order.ts::create", "create", "src/domain/order.ts", 12),
+            make_symbol("src/infra/db.ts::save", "save", "src/infra/db.ts", 5),
+        ];
+        let edges = vec![
+            DependencyEdge {
+                from_symbol: "src/domain/order.ts".to_string(),
+                to_symbol: "src/infra/db.ts".to_string(),
+                kind: DependencyEdgeKind::Imports,
+                count: 1,
+            },
+            DependencyEdge {
+                from_symbol: "src/domain/order.ts::create".to_string(),
+                to_symbol: "src/infra/db.ts::save".to_string(),
+                kind: DependencyEdgeKind::Calls,
+                count: 1,
+            },
+        ];
+        let config = ArchitectureConfig {
+            layers: vec!["src/infra/**".into(), "src/domain/**".into()],
+            ..Default::default()
+        };
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = make_ctx(&symbols, &edges, &graph, &config);
+
+        let findings = ArchitectureViolationRule.detect(&ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].symbol_id, "src/domain/order.ts::create");
+        assert_eq!(findings[0].line, 12);
     }
 }

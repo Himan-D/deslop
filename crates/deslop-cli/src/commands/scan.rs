@@ -3,12 +3,15 @@ use super::common::{print_llm_status, scan_and_analyze, FindingRow};
 use super::sarif::to_sarif;
 use colored::*;
 use deslop_core::format_location;
-use deslop_core::Severity;
+use deslop_core::{Severity, SlopFinding};
 use deslop_detector::{score_is_reliable, SlopDetectorEngine, MIN_SCORED_LOC};
+use deslop_graph::{churn::ChurnAnalysisReport, GitChurnAnalyzer};
 use deslop_llm::LlmClient;
 use serde::Serialize;
-use std::path::Path;
-use tabled::Table;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use tabled::{Table, Tabled};
 
 /// Baseline comparison details, present when `--base` was used.
 #[derive(Debug, Clone, Serialize)]
@@ -17,6 +20,27 @@ pub struct BaselineSummary {
     pub base_slop_index: f64,
     pub new_findings: usize,
     pub resolved_findings: usize,
+}
+
+/// File-level risk combining git commit churn and slop severity weight.
+#[derive(Debug, Clone, Serialize)]
+pub struct HotspotEntry {
+    pub file: String,
+    pub commits: usize,
+    pub finding_count: usize,
+    pub hotspot_score: f64,
+}
+
+#[derive(Tabled)]
+struct HotspotRow {
+    #[tabled(rename = "File")]
+    file: String,
+    #[tabled(rename = "Commits")]
+    commits: usize,
+    #[tabled(rename = "Findings")]
+    finding_count: usize,
+    #[tabled(rename = "Hotspot Score")]
+    hotspot_score: String,
 }
 
 /// Machine-readable scan result for CI pipelines and coding agents.
@@ -36,6 +60,8 @@ pub struct ScanReport {
     pub finding_count: usize,
     pub findings: Vec<deslop_core::SlopFinding>,
     pub baseline: Option<BaselineSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hotspots: Option<Vec<HotspotEntry>>,
 }
 
 pub fn build_scan_report(
@@ -56,7 +82,87 @@ pub fn build_scan_report(
         finding_count: findings.len(),
         findings,
         baseline: None,
+        hotspots: None,
     }
+}
+
+fn severity_weight(severity: Severity) -> f64 {
+    match severity {
+        Severity::Critical => 15.0,
+        Severity::High => 8.0,
+        Severity::Medium => 4.0,
+        Severity::Low => 1.5,
+    }
+}
+
+fn git_toplevel(path: &Path) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(s))
+    }
+}
+
+fn compute_hotspots_from_report(
+    churn: Option<&ChurnAnalysisReport>,
+    git_root: &Path,
+    findings: &[SlopFinding],
+) -> Vec<HotspotEntry> {
+    let Some(report) = churn else {
+        return Vec::new();
+    };
+
+    let mut per_file: HashMap<String, (usize, f64)> = HashMap::new();
+    for f in findings {
+        let key = baseline::relative_key(&f.file_path, git_root);
+        let entry = per_file.entry(key).or_insert((0, 0.0));
+        entry.0 += 1;
+        entry.1 += severity_weight(f.severity);
+    }
+
+    let mut entries: Vec<HotspotEntry> = report
+        .top_hotspots
+        .iter()
+        .filter_map(|h| {
+            let normalized = h.file_path.replace('\\', "/");
+            let &(finding_count, file_slop_weight) = per_file.get(&normalized)?;
+            if finding_count == 0 {
+                return None;
+            }
+            Some(HotspotEntry {
+                file: normalized,
+                commits: h.commit_count,
+                finding_count,
+                hotspot_score: h.commit_count as f64 * file_slop_weight,
+            })
+        })
+        .collect();
+
+    entries.sort_by(|a, b| {
+        b.hotspot_score
+            .partial_cmp(&a.hotspot_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.commits.cmp(&a.commits))
+            .then_with(|| a.file.cmp(&b.file))
+    });
+    entries.truncate(10);
+    entries
+}
+
+fn compute_hotspots(path: &Path, findings: &[SlopFinding]) -> Vec<HotspotEntry> {
+    let churn = GitChurnAnalyzer::analyze(path, 200);
+    let root = git_toplevel(path).unwrap_or_else(|| path.to_path_buf());
+    compute_hotspots_from_report(churn.as_ref(), &root, findings)
 }
 
 pub fn run(
@@ -65,6 +171,7 @@ pub fn run(
     explain: bool,
     format: &str,
     base: Option<&str>,
+    hotspots: bool,
 ) -> anyhow::Result<()> {
     if !matches!(format, "table" | "json" | "sarif") {
         anyhow::bail!(
@@ -85,6 +192,12 @@ pub fn run(
         None => all_findings,
     };
 
+    let hotspot_entries = if hotspots && format != "sarif" {
+        Some(compute_hotspots(path, &findings))
+    } else {
+        None
+    };
+
     match format {
         "json" => {
             let mut report = build_scan_report(path, &parsed, findings);
@@ -95,6 +208,7 @@ pub fn run(
                 new_findings: d.new.len(),
                 resolved_findings: d.resolved_count,
             });
+            report.hotspots = hotspot_entries;
             println!("{}", serde_json::to_string_pretty(&report)?);
             return Ok(());
         }
@@ -226,6 +340,24 @@ pub fn run(
         );
     }
 
+    if let Some(entries) = hotspot_entries {
+        println!("{}", "Hotspots (Churn × Slop)".bold());
+        if entries.is_empty() {
+            println!("No churn hotspots with slop findings (or not a git repository).\n");
+        } else {
+            let hotspot_rows: Vec<HotspotRow> = entries
+                .into_iter()
+                .map(|e| HotspotRow {
+                    file: e.file,
+                    commits: e.commits,
+                    finding_count: e.finding_count,
+                    hotspot_score: format!("{:.1}", e.hotspot_score),
+                })
+                .collect();
+            println!("{}\n", Table::new(hotspot_rows));
+        }
+    }
+
     if explain {
         let llm = LlmClient::auto_detect();
         if llm.is_offline() {
@@ -294,5 +426,79 @@ mod tests {
         let json = serde_json::to_string(&report).expect("serializes");
         assert!(json.contains("\"slop_index\":3.0"));
         assert!(json.contains("\"finding_count\":2"));
+        assert!(!json.contains("\"hotspots\""));
+    }
+
+    fn finding_with(file: &str, severity: Severity) -> SlopFinding {
+        SlopFinding {
+            kind: SlopKind::TollboothWrapper,
+            symbol_id: format!("{file}::sym"),
+            file_path: PathBuf::from(file),
+            line: 1,
+            severity,
+            confidence: 0.9,
+            title: "finding".to_string(),
+            description: "desc".to_string(),
+            remediation: "fix".to_string(),
+            estimated_lines_saved: 5,
+        }
+    }
+
+    #[test]
+    fn hotspots_none_for_non_git_dir() {
+        let entries = compute_hotspots_from_report(None, Path::new("."), &[finding(3)]);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn hotspots_scores_sorts_and_truncates_top_10() {
+        use deslop_graph::churn::GitHotspot;
+
+        let mut top_hotspots = Vec::new();
+        let mut findings = Vec::new();
+        // 11 files with findings + 1 churn-only file with no findings.
+        for i in 0..11 {
+            let file = format!("src/f{i}.rs");
+            top_hotspots.push(GitHotspot {
+                file_path: file.clone(),
+                commit_count: i + 1,
+                churn_risk: "Low".to_string(),
+            });
+            findings.push(finding_with(&file, Severity::Low));
+        }
+        top_hotspots.push(GitHotspot {
+            file_path: "src/clean_churn.rs".to_string(),
+            commit_count: 100,
+            churn_risk: "Critical".to_string(),
+        });
+        // Give src/f0.rs a Critical + High finding (15 + 8 = 23) * 1 commit = 23.0,
+        // beating src/f10.rs (1.5 * 11 = 16.5).
+        findings.push(finding_with("src/f0.rs", Severity::Critical));
+        findings.push(finding_with("src/f0.rs", Severity::High));
+        // Give src/f1.rs a Medium finding (1.5 + 4.0 = 5.5) * 2 commits = 11.0.
+        findings.push(finding_with("src/f1.rs", Severity::Medium));
+
+        let churn = ChurnAnalysisReport {
+            total_commits_analyzed: 50,
+            sufficient_history: true,
+            top_hotspots,
+            temporal_couplings: Vec::new(),
+        };
+
+        let entries = compute_hotspots_from_report(Some(&churn), Path::new("."), &findings);
+        assert_eq!(entries.len(), 10);
+        assert!(entries.iter().all(|e| e.file != "src/clean_churn.rs"));
+        // Top entry: src/f0.rs with 1 commit, 3 findings (Low 1.5 + Critical 15 + High 8 = 24.5).
+        assert_eq!(entries[0].file, "src/f0.rs");
+        assert_eq!(entries[0].commits, 1);
+        assert_eq!(entries[0].finding_count, 3);
+        assert!((entries[0].hotspot_score - 24.5).abs() < 1e-9);
+        // Second entry: src/f10.rs with 11 commits, 1 Low finding -> 16.5.
+        assert_eq!(entries[1].file, "src/f10.rs");
+        assert!((entries[1].hotspot_score - 16.5).abs() < 1e-9);
+        // Sorted descending.
+        for w in entries.windows(2) {
+            assert!(w[0].hotspot_score >= w[1].hotspot_score);
+        }
     }
 }

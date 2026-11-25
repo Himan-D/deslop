@@ -38,6 +38,10 @@ enum Commands {
         /// Report only findings introduced since this git ref (e.g. origin/main)
         #[arg(long, value_name = "REF")]
         base: Option<String>,
+
+        /// Rank top files by git churn × slop severity weight
+        #[arg(long)]
+        hotspots: bool,
     },
 
     /// CI gate. Without --base: fails on slop above --max-slop or any cycle.
@@ -227,7 +231,8 @@ fn main() -> anyhow::Result<()> {
             explain,
             format,
             base,
-        } => commands::scan::run(&path, detailed, explain, &format, base.as_deref()),
+            hotspots,
+        } => commands::scan::run(&path, detailed, explain, &format, base.as_deref(), hotspots),
         Commands::Deloop {
             path,
             explain,
