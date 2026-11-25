@@ -92,6 +92,35 @@ enum Commands {
     /// Launch Model Context Protocol (MCP) server over stdio for AI agent tool integration
     Mcp,
 
+    /// Return the single highest-priority finding to fix next (ranked by severity, security, and git churn)
+    Next {
+        /// Target directory path
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Output format: table or json
+        #[arg(long, default_value = "table")]
+        format: String,
+
+        /// Number of top priority items to return
+        #[arg(short = 'n', long, default_value_t = 1)]
+        count: usize,
+    },
+
+    /// Print or write MCP + AGENTS.md setup for coding agents (claude, cursor, codex, gemini, all)
+    Setup {
+        /// Target agent: claude, cursor, codex, gemini, or all
+        agent: String,
+
+        /// Project directory path
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Write project-local .mcp.json / .cursor/mcp.json (dry-run by default)
+        #[arg(long)]
+        write: bool,
+    },
+
     /// Invert a codebase into a clean architectural specification & target blueprint
     #[command(next_help_heading = "Advanced & Experimental")]
     Invert {
@@ -264,6 +293,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Trace { path, spans } => commands::trace::run(&path, &spans),
         Commands::Lsp => commands::lsp_cmd::run(),
         Commands::Mcp => commands::mcp_cmd::run(),
+        Commands::Next {
+            path,
+            format,
+            count,
+        } => commands::next::run(&path, &format, count),
+        Commands::Setup { agent, path, write } => commands::setup::run(&agent, &path, write),
         Commands::Churn { path, commits } => commands::churn::run(&path, commits),
     }
 }

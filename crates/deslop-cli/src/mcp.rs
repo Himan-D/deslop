@@ -203,6 +203,17 @@ impl McpServer {
                         }
                     }),
                     json!({
+                        "name": "deslop_next",
+                        "description": "Return the highest-priority finding(s) to fix next (ranked by severity, security/cycle impact, and git churn) with code snippets and verification command.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": { "type": "string", "description": "Target directory path (defaults to '.')" },
+                                "count": { "type": "integer", "description": "Number of top items to return (defaults to 1)" }
+                            }
+                        }
+                    }),
+                    json!({
                         "name": "deslop_deloop",
                         "description": "Find circular dependency cycles and return Feedback Arc Set (FAS) cut edges with refactor steps.",
                         "inputSchema": {
@@ -313,6 +324,13 @@ impl McpServer {
                             Err(e) => (e.to_string(), true),
                         }
                     }
+                    "deslop_next" => {
+                        let count = args.get("count").and_then(|c| c.as_u64()).unwrap_or(1) as usize;
+                        match crate::commands::next::compute_next_report(&target_path, count) {
+                            Ok(report) => (serde_json::to_string_pretty(&report)?, false),
+                            Err(e) => (e.to_string(), true),
+                        }
+                    }
                     "deslop_deloop" => (Self::call_deloop(&target_path)?, false),
                     "deslop_deep" => (Self::call_deep(&target_path)?, false),
                     "deslop_capacity" => (Self::call_capacity(&target_path)?, false),
@@ -328,7 +346,7 @@ impl McpServer {
                     }
                     _ => (
                         format!(
-                            "Unknown tool '{}'. Call tools/list to see available tools (deslop_scan, deslop_check, deslop_deloop, deslop_deep, deslop_capacity, deslop_testgen, deslop_prune_diff, deslop_scip, deslop_churn).",
+                            "Unknown tool '{}'. Call tools/list to see available tools (deslop_scan, deslop_check, deslop_next, deslop_deloop, deslop_deep, deslop_capacity, deslop_testgen, deslop_prune_diff, deslop_scip, deslop_churn).",
                             tool_name
                         ),
                         true,
