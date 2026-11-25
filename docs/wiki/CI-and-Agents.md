@@ -82,11 +82,13 @@ Add to Claude Code / Claude Desktop, Cursor, Codex, or Gemini CLI / Antigravity:
 
 See [`docs/AGENT_SETUP.md`](../AGENT_SETUP.md) for client-specific config paths, `AGENTS.md` / `CLAUDE.md` prompt rules, and `.git/hooks/pre-commit` snippets.
 
-### Available MCP Tools (9 Tools)
+### Available MCP Tools (10 Tools)
 
 | Tool | Purpose |
 | :--- | :--- |
 | `deslop_scan` | Computes the Slop Index (`0-100`), LOC, symbol count, and top debt findings. |
+| `deslop_check` | Runs the architectural & SAST quality gate (cycles, `deslop.toml` violations, High/Critical findings, and Slop Index threshold). Accepts `path`, optional `base` git ref, and optional `max_slop`. |
+| `deslop_next` | Returns the top prioritized finding(s) to fix next (ranked by severity, security/cycle impact, and git churn) with code snippets and verification command. |
 | `deslop_deloop` | Discovers circular dependency SCCs and outputs the Feedback Arc Set (FAS) cut edge and refactoring steps. |
 | `deslop_deep` | Computes Robert C. Martin's Package Coupling ($C_a, C_e, I, A, D$), Zone of Pain, and dominator bottlenecks. |
 | `deslop_capacity` | Estimates static concurrent-user and RPS ceilings per device profile (heuristic, not a load test). |
@@ -94,4 +96,16 @@ See [`docs/AGENT_SETUP.md`](../AGENT_SETUP.md) for client-specific config paths,
 | `deslop_prune_diff` | Generates a unified diff patch preview for dead code deletion and tollbooth wrapper collapse. |
 | `deslop_scip` | Exports the symbol dependency graph in standard SCIP JSON format. |
 | `deslop_churn` | Analyzes git commit history for churn hotspots and hidden temporal coupling (co-changing files with zero static imports). |
-| `deslop_check` | Runs the architectural quality gate (cycles, `deslop.toml` layer violations, High/Critical findings, and Slop Index threshold). Accepts `path`, optional `base` git ref, and optional `max_slop`. |
+
+---
+
+## 4. Badges & Visual Graphs
+
+```bash
+# Shields.io endpoint JSON or standalone SVG badge
+deslop badge . --format json > slop.json
+deslop badge . --format svg -o slop-badge.svg
+
+# Self-contained interactive HTML dependency graph (cycles & violations highlighted in red)
+deslop graph . --format html -o graph.html
+```

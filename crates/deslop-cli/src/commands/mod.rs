@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod badge;
 pub mod baseline;
 pub mod capacity;
 pub mod check;

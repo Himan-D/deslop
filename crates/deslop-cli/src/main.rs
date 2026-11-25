@@ -234,7 +234,7 @@ enum Commands {
         path: PathBuf,
     },
 
-    /// Export the symbol dependency graph to Mermaid or JSON
+    /// Export the symbol dependency graph to Mermaid, JSON, or interactive HTML
     Graph {
         /// Target directory path
         #[arg(default_value = ".")]
@@ -244,9 +244,28 @@ enum Commands {
         #[arg(short, long, default_value_t = 30)]
         max_nodes: usize,
 
-        /// Output format: mermaid or json
+        /// Output format: mermaid, json, or html
         #[arg(short, long, default_value = "mermaid")]
         format: String,
+
+        /// Optional output file path (defaults to stdout if omitted)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Generate a Shields.io JSON endpoint or standalone SVG Slop Index badge
+    Badge {
+        /// Target directory path
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Output format: json or svg
+        #[arg(short, long, default_value = "json")]
+        format: String,
+
+        /// Optional output file path (defaults to stdout if omitted)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -276,7 +295,13 @@ fn main() -> anyhow::Result<()> {
             path,
             max_nodes,
             format,
-        } => commands::graph::run(&path, max_nodes, &format),
+            output,
+        } => commands::graph::run(&path, max_nodes, &format, output.as_deref()),
+        Commands::Badge {
+            path,
+            format,
+            output,
+        } => commands::badge::run(&path, &format, output.as_deref()),
         Commands::Check {
             path,
             max_slop,

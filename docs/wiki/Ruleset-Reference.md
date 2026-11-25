@@ -24,14 +24,23 @@ from = "src/domain/**"
 to = "apps/*/**"
 description = "Domain layer cannot import from application entrypoints."
 
+# Optional: enforce sibling isolation (e.g., no cross-feature imports).
+isolated = ["src/features/*"]
+
 # Optional: suppress specific intentional cross-boundary edges.
 [[allow_exceptions]]
 from = "src/domain/legacy_bridge.ts"
 to = "apps/web/**"
 reason = "Temporary bridge while extracting port interface."
+
+# Optional: Static Security Audit (SAST) controls.
+[security]
+enabled = true
+ignore_rules = []   # e.g. ["hardcoded-secret", "injection-sink", "unsafe-deserialization", "weak-crypto", "unsafe-audit"]
+ignore_paths = []   # e.g. ["scripts/**"]
 ```
 
-> **Note:** Both `layers` and `forbidden_rules` must be present in `deslop.toml` (empty arrays `[]` are valid). `allow_exceptions` is optional and defaults to empty.
+> **Note:** `layers`, `forbidden_rules`, `allow_exceptions`, `isolated`, and `[security]` all default cleanly when omitted. `forbidden_rules` and `layers` evaluate both resolved symbol calls and raw `DependencyEdgeKind::Imports` edges (e.g. `from = "src/domain/**"`, `to = "prisma"`).
 
 ---
 
