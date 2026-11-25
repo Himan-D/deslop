@@ -1,0 +1,104 @@
+# deslop.toml — Architectural Fitness Rules for Deslop's Own Workspace
+#
+# Deslop dogfoods its own ArchUnit-style boundary enforcement.
+# Loaded automatically by `deslop scan`, `deslop check`, and `deslop mcp`.
+
+# Strict monotonic layer ordering (top-to-bottom).
+# Each layer may only depend on layers below it (higher index) or unlisted
+# sibling crates, never on layers above it (lower index).
+layers = [
+    "crates/deslop-cli/**",
+    "crates/deslop-inversion/**",
+    "crates/deslop-detector/**",
+    "crates/deslop-graph/**",
+    "crates/deslop-core/**",
+]
+
+# Explicit forbidden cross-crate dependencies.
+# Flagged as LayerViolation (Critical) regardless of layer list position.
+
+[[forbidden_rules]]
+from = "crates/deslop-core/**"
+to = "crates/deslop-parser/**"
+description = "deslop-core must remain zero-internal-dependency and cannot depend on deslop-parser."
+
+[[forbidden_rules]]
+from = "crates/deslop-core/**"
+to = "crates/deslop-graph/**"
+description = "deslop-core must remain zero-internal-dependency and cannot depend on deslop-graph."
+
+[[forbidden_rules]]
+from = "crates/deslop-core/**"
+to = "crates/deslop-detector/**"
+description = "deslop-core must remain zero-internal-dependency and cannot depend on deslop-detector."
+
+[[forbidden_rules]]
+from = "crates/deslop-core/**"
+to = "crates/deslop-inversion/**"
+description = "deslop-core must remain zero-internal-dependency and cannot depend on deslop-inversion."
+
+[[forbidden_rules]]
+from = "crates/deslop-core/**"
+to = "crates/deslop-llm/**"
+description = "deslop-core must remain zero-internal-dependency and cannot depend on deslop-llm."
+
+[[forbidden_rules]]
+from = "crates/deslop-core/**"
+to = "crates/deslop-cli/**"
+description = "deslop-core must remain zero-internal-dependency and cannot depend on deslop-cli."
+
+[[forbidden_rules]]
+from = "crates/deslop-parser/**"
+to = "crates/deslop-cli/**"
+description = "deslop-parser cannot depend on the CLI orchestration layer (deslop-cli)."
+
+[[forbidden_rules]]
+from = "crates/deslop-parser/**"
+to = "crates/deslop-inversion/**"
+description = "deslop-parser cannot depend on deslop-inversion."
+
+[[forbidden_rules]]
+from = "crates/deslop-parser/**"
+to = "crates/deslop-detector/**"
+description = "deslop-parser cannot depend on deslop-detector."
+
+[[forbidden_rules]]
+from = "crates/deslop-parser/**"
+to = "crates/deslop-graph/**"
+description = "deslop-parser cannot depend on deslop-graph."
+
+[[forbidden_rules]]
+from = "crates/deslop-graph/**"
+to = "crates/deslop-cli/**"
+description = "deslop-graph cannot depend on the CLI orchestration layer (deslop-cli)."
+
+[[forbidden_rules]]
+from = "crates/deslop-graph/**"
+to = "crates/deslop-parser/**"
+description = "deslop-graph cannot depend on deslop-parser."
+
+[[forbidden_rules]]
+from = "crates/deslop-llm/**"
+to = "crates/deslop-cli/**"
+description = "deslop-llm cannot depend on deslop-cli."
+
+[[forbidden_rules]]
+from = "crates/deslop-llm/**"
+to = "crates/deslop-inversion/**"
+description = "deslop-llm cannot depend on deslop-inversion."
+
+# ---------------------------------------------------------------------------
+# Intentional Exceptions (`[[allow_exceptions]]`)
+# ---------------------------------------------------------------------------
+# When a specific cross-boundary edge is intentional (for example, a legacy
+# adapter or a scoped bridge being phased out), you can suppress only that
+# exact `from -> to` pair without weakening the broader layer or forbidden rule.
+#
+# Both `from` and `to` support the same glob/substring matching as `layers`
+# and `forbidden_rules`. `reason` documents why the exception exists.
+#
+# Example:
+# [[allow_exceptions]]
+# from = "crates/deslop-graph/src/legacy_bridge.rs"
+# to = "crates/deslop-parser/**"
+# reason = "Temporary adapter pending trait extraction into deslop-core."

@@ -233,6 +233,8 @@ pub enum SlopKind {
 pub struct ArchitectureConfig {
     pub layers: Vec<String>,
     pub forbidden_rules: Vec<ForbiddenRule>,
+    #[serde(default)]
+    pub allow_exceptions: Vec<AllowException>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +242,14 @@ pub struct ForbiddenRule {
     pub from: String,
     pub to: String,
     pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllowException {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub reason: String,
 }
 
 impl ArchitectureConfig {

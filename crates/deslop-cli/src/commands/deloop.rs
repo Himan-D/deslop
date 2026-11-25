@@ -1,10 +1,36 @@
 use super::common::scan_and_analyze;
 use colored::*;
-use deslop_inversion::DelooperEngine;
+use deslop_inversion::{DeloopPlan, DelooperEngine};
 use deslop_llm::LlmClient;
+use serde::Serialize;
 use std::path::Path;
 
-pub fn run(path: &Path, explain: bool) -> anyhow::Result<()> {
+#[derive(Serialize)]
+struct DeloopReport {
+    target: String,
+    loop_count: usize,
+    plans: Vec<DeloopPlan>,
+    verification_command: &'static str,
+}
+
+pub fn run(path: &Path, explain: bool, format: &str) -> anyhow::Result<()> {
+    if !matches!(format, "table" | "json") {
+        anyhow::bail!("unknown --format '{}': expected table or json", format);
+    }
+
+    if format == "json" {
+        let (parsed, graph, _findings, _elapsed) = scan_and_analyze(path)?;
+        let plans = DelooperEngine::compute_deloop_plans(&parsed.symbols, &graph);
+        let report = DeloopReport {
+            target: path.display().to_string(),
+            loop_count: plans.len(),
+            plans,
+            verification_command: "deslop check .",
+        };
+        println!("{}", serde_json::to_string(&report)?);
+        return Ok(());
+    }
+
     println!("{}", "deslop: principal de-looping & cycle breaker".bold());
     println!("target: {}\n", path.display());
 

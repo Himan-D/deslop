@@ -118,6 +118,89 @@ impl SlopDetectorEngine {
     }
 }
 
+/// Matches `path_or_module` against `pattern`.
+///
+/// When `pattern` contains `*`, normalizes backslashes to `/` and performs glob
+/// matching where `*` matches within a single path segment and `**` matches zero
+/// or more segments. When `pattern` has no `*`, falls back to substring matching
+/// (after `/` normalization) for backward compatibility with layer names such as
+/// `["controller", "service", "repo"]`.
+pub fn matches_pattern(path_or_module: &str, pattern: &str) -> bool {
+    let normalized_path = path_or_module.replace('\\', "/");
+    let normalized_pat = pattern.replace('\\', "/");
+
+    if !normalized_pat.contains('*') {
+        return normalized_path.contains(&normalized_pat);
+    }
+
+    let path_segs: Vec<&str> = normalized_path
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
+    let pat_segs: Vec<&str> = normalized_pat
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
+
+    match_segments(&path_segs, &pat_segs)
+}
+
+fn match_segments(path_segs: &[&str], pat_segs: &[&str]) -> bool {
+    let n = path_segs.len();
+    let m = pat_segs.len();
+    let mut dp = vec![vec![false; m + 1]; n + 1];
+    dp[0][0] = true;
+
+    for j in 1..=m {
+        if pat_segs[j - 1] == "**" {
+            dp[0][j] = dp[0][j - 1];
+        }
+    }
+
+    for i in 1..=n {
+        for j in 1..=m {
+            if pat_segs[j - 1] == "**" {
+                dp[i][j] = dp[i][j - 1] || dp[i - 1][j];
+            } else if match_single_segment(path_segs[i - 1], pat_segs[j - 1]) {
+                dp[i][j] = dp[i - 1][j - 1];
+            }
+        }
+    }
+
+    dp[n][m]
+}
+
+fn match_single_segment(seg: &str, pat: &str) -> bool {
+    let s: Vec<char> = seg.chars().collect();
+    let p: Vec<char> = pat.chars().collect();
+    let (mut si, mut pi) = (0usize, 0usize);
+    let mut star_idx: Option<usize> = None;
+    let mut match_idx = 0usize;
+
+    while si < s.len() {
+        if pi < p.len() && p[pi] == s[si] {
+            si += 1;
+            pi += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star_idx = Some(pi);
+            match_idx = si;
+            pi += 1;
+        } else if let Some(star) = star_idx {
+            pi = star + 1;
+            match_idx += 1;
+            si = match_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+
+    pi == p.len()
+}
+
 /// Evaluates ArchUnit-style declarative architectural rules and forbidden dependencies
 pub struct ArchitectureViolationRule;
 
@@ -152,9 +235,15 @@ impl DetectionRule for ArchitectureViolationRule {
                 .map(|(p, l)| (p.to_path_buf(), *l))
                 .unwrap_or_default();
 
+            if config.allow_exceptions.iter().any(|ex| {
+                matches_pattern(&from_path, &ex.from) && matches_pattern(&to_path, &ex.to)
+            }) {
+                continue;
+            }
+
             // Check forbidden rules
             for rule in &config.forbidden_rules {
-                if from_path.contains(&rule.from) && to_path.contains(&rule.to) {
+                if matches_pattern(&from_path, &rule.from) && matches_pattern(&to_path, &rule.to) {
                     let desc = rule.description.clone().unwrap_or_else(|| {
                         format!("Dependency from '{}' to '{}' is explicitly forbidden by architecture policy.", rule.from, rule.to)
                     });
@@ -175,8 +264,14 @@ impl DetectionRule for ArchitectureViolationRule {
 
             // Check strict monotonic layer ordering
             if !config.layers.is_empty() {
-                let from_layer_idx = config.layers.iter().position(|l| from_path.contains(l));
-                let to_layer_idx = config.layers.iter().position(|l| to_path.contains(l));
+                let from_layer_idx = config
+                    .layers
+                    .iter()
+                    .position(|l| matches_pattern(&from_path, l));
+                let to_layer_idx = config
+                    .layers
+                    .iter()
+                    .position(|l| matches_pattern(&to_path, l));
 
                 if let (Some(f_idx), Some(t_idx)) = (from_layer_idx, to_layer_idx) {
                     if f_idx > t_idx {
@@ -460,19 +555,16 @@ impl DetectionRule for CircularDependencyRule {
     }
 
     fn detect(&self, ctx: &DetectionContext) -> Vec<SlopFinding> {
-        let cycles = ctx.graph.find_circular_dependencies();
+        let cycles = ctx.graph.find_circular_dependencies_with_confidence();
         let sym_map: HashMap<&str, &Symbol> =
             ctx.symbols.iter().map(|s| (s.name.as_str(), s)).collect();
-        // The graph resolves calls by bare name, so `new` or `default` can
-        // stitch unrelated types into a fake loop. Count how many symbols
-        // share each bare name; cycles through shared names are downgraded.
         let mut bare_counts: HashMap<&str, usize> = HashMap::new();
         for s in ctx.symbols {
             *bare_counts.entry(bare_name(&s.name)).or_insert(0) += 1;
         }
         let mut findings = Vec::new();
 
-        for cycle in cycles {
+        for (cycle, uses_bare_heuristic) in cycles {
             let cycle_repr = cycle.join(" -> ");
             if let Some(first_sym_name) = cycle.first() {
                 if let Some(first_sym) = sym_map.get(first_sym_name.as_str()) {
@@ -488,9 +580,10 @@ impl DetectionRule for CircularDependencyRule {
                         .filter_map(|n| sym_map.get(n.as_str()))
                         .map(|s| s.file_path.as_path())
                         .collect();
-                    let ambiguous = cycle
+                    let has_bare_collision = cycle
                         .iter()
                         .any(|n| bare_counts.get(bare_name(n)).copied().unwrap_or(0) > 1);
+                    let ambiguous = uses_bare_heuristic && has_bare_collision;
                     let severity = match (ambiguous, files.len()) {
                         (true, _) => Severity::Low,
                         (false, 0 | 1) => Severity::Medium,
@@ -870,6 +963,32 @@ mod tests {
     }
 
     #[test]
+    fn qualified_cycle_with_colliding_bare_names_stays_high() {
+        let mut a = sym("a.rs::Config::new", "Config::new", SymbolKind::Method, 3);
+        let mut b = sym("b.rs::Builder::new", "Builder::new", SymbolKind::Method, 3);
+        let other = sym("c.rs::new", "new", SymbolKind::Function, 3);
+        a.file_path = PathBuf::from("a.rs");
+        b.file_path = PathBuf::from("b.rs");
+        let symbols = vec![a, b, other];
+        let edges = vec![
+            edge_of(DependencyEdgeKind::Calls, "a.rs::Config::new", "Builder::new"),
+            edge_of(DependencyEdgeKind::Calls, "b.rs::Builder::new", "Config::new"),
+        ];
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = DetectionContext {
+            symbols: &symbols,
+            edges: &edges,
+            graph: &graph,
+            config: None,
+            callsites: None,
+        };
+        let findings = CircularDependencyRule.detect(&ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::High);
+        assert_eq!(findings[0].confidence, 0.95);
+    }
+
+    #[test]
     fn score_denominator_is_floored_for_small_projects() {
         let finding = SlopFinding {
             kind: SlopKind::Cycle,
@@ -889,5 +1008,145 @@ mod tests {
         assert!(!score_is_reliable(51));
         assert!(score_is_reliable(MIN_SCORED_LOC));
         assert_eq!(SlopDetectorEngine::calculate_slop_index(0, &[finding]), 0.0);
+    }
+
+    #[test]
+    fn glob_based_layers_and_forbidden_rules_detect_violations() {
+        use deslop_core::ForbiddenRule;
+
+        assert!(matches_pattern("src/domain/user.rs", "src/domain/**"));
+        assert!(matches_pattern(
+            "src\\domain\\nested\\user.rs",
+            "src/domain/**"
+        ));
+        assert!(matches_pattern("apps/web", "apps/*"));
+        assert!(!matches_pattern("apps/web/index.ts", "apps/*"));
+        assert!(matches_pattern("src/controller/auth.rs", "controller"));
+
+        let mut domain_sym = sym(
+            "src/domain/order.rs::Order::create",
+            "Order::create",
+            SymbolKind::Method,
+            10,
+        );
+        domain_sym.file_path = PathBuf::from("src/domain/order.rs");
+
+        let mut infra_sym = sym(
+            "src/infra/db/pg.rs::PgPool::insert",
+            "PgPool::insert",
+            SymbolKind::Method,
+            10,
+        );
+        infra_sym.file_path = PathBuf::from("src/infra/db/pg.rs");
+
+        let mut app_sym = sym(
+            "apps/api/handler.rs::handle",
+            "handle",
+            SymbolKind::Function,
+            10,
+        );
+        app_sym.file_path = PathBuf::from("apps/api/handler.rs");
+
+        let symbols = vec![domain_sym, infra_sym, app_sym];
+        let edges = vec![
+            edge(
+                "src/domain/order.rs::Order::create",
+                "src/infra/db/pg.rs::PgPool::insert",
+            ),
+            edge(
+                "apps/api/handler.rs::handle",
+                "src/domain/order.rs::Order::create",
+            ),
+        ];
+
+        let config = ArchitectureConfig {
+            layers: vec!["apps/*/**".into(), "src/domain/**".into()],
+            forbidden_rules: vec![ForbiddenRule {
+                from: "src/domain/**".into(),
+                to: "src/infra/**".into(),
+                description: None,
+            }],
+            allow_exceptions: Vec::new(),
+        };
+
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = DetectionContext {
+            symbols: &symbols,
+            edges: &edges,
+            graph: &graph,
+            config: Some(&config),
+            callsites: None,
+        };
+
+        let findings = ArchitectureViolationRule.detect(&ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].kind, SlopKind::LayerViolation);
+        assert_eq!(findings[0].symbol_id, "src/domain/order.rs::Order::create");
+    }
+
+    #[test]
+    fn allow_exceptions_suppresses_matching_violation_only() {
+        use deslop_core::{AllowException, ForbiddenRule};
+
+        let mut exempted_domain = sym(
+            "src/domain/legacy.rs::migrate",
+            "migrate",
+            SymbolKind::Function,
+            10,
+        );
+        exempted_domain.file_path = PathBuf::from("src/domain/legacy.rs");
+
+        let mut other_domain = sym(
+            "src/domain/order.rs::save",
+            "save",
+            SymbolKind::Function,
+            10,
+        );
+        other_domain.file_path = PathBuf::from("src/domain/order.rs");
+
+        let mut infra_sym = sym(
+            "src/infra/sql.rs::exec",
+            "exec",
+            SymbolKind::Function,
+            10,
+        );
+        infra_sym.file_path = PathBuf::from("src/infra/sql.rs");
+
+        let symbols = vec![exempted_domain, other_domain, infra_sym];
+        let edges = vec![
+            edge("src/domain/legacy.rs::migrate", "src/infra/sql.rs::exec"),
+            edge("src/domain/order.rs::save", "src/infra/sql.rs::exec"),
+        ];
+
+        let config = ArchitectureConfig {
+            layers: vec!["src/infra/**".into(), "src/domain/**".into()],
+            forbidden_rules: vec![ForbiddenRule {
+                from: "src/domain/**".into(),
+                to: "src/infra/**".into(),
+                description: None,
+            }],
+            allow_exceptions: vec![AllowException {
+                from: "src/domain/legacy.rs".into(),
+                to: "src/infra/**".into(),
+                reason: "Legacy migration bridge".into(),
+            }],
+        };
+
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = DetectionContext {
+            symbols: &symbols,
+            edges: &edges,
+            graph: &graph,
+            config: Some(&config),
+            callsites: None,
+        };
+
+        let findings = ArchitectureViolationRule.detect(&ctx);
+        // Only `src/domain/order.rs::save` should be flagged (both forbidden rule + layer inversion),
+        // while `src/domain/legacy.rs::migrate` is completely suppressed.
+        assert!(!findings.is_empty());
+        assert!(findings
+            .iter()
+            .all(|f| f.symbol_id == "src/domain/order.rs::save"));
     }
 }

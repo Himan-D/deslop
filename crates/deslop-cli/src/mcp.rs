@@ -181,7 +181,7 @@ impl McpServer {
                 let mut tools = vec![
                     json!({
                         "name": "deslop_scan",
-                        "description": "Scans a codebase to compute the Slop Index (0-100), identify ghost abstractions, tollbooth wrappers, and architectural debt.",
+                        "description": "Scan a directory for architectural debt (dead code, tollbooth wrappers, cycles) and compute its Slop Index (0-100).",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -190,8 +190,21 @@ impl McpServer {
                         }
                     }),
                     json!({
+                        "name": "deslop_check",
+                        "description": "Run the architectural CI/PR gate on a directory. Without `base`, fails if Slop Index exceeds `max_slop` (default 25.0) or any dependency cycle exists. With `base`, fails only on newly introduced cycles or High/Critical findings (plus `max_slop` if explicitly set).",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": { "type": "string", "description": "Target directory path" },
+                                "base": { "type": "string", "description": "Optional git ref (e.g. origin/main) to gate only new debt introduced on the branch" },
+                                "max_slop": { "type": "number", "description": "Optional Slop Index threshold (defaults to 25.0 when base is omitted)" }
+                            },
+                            "required": ["path"]
+                        }
+                    }),
+                    json!({
                         "name": "deslop_deloop",
-                        "description": "Discovers circular dependency cycles and identifies the optimal Feedback Arc Set (FAS) cut edge with actionable de-looping refactor steps.",
+                        "description": "Find circular dependency cycles and return Feedback Arc Set (FAS) cut edges with refactor steps.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -201,7 +214,7 @@ impl McpServer {
                     }),
                     json!({
                         "name": "deslop_deep",
-                        "description": "Computes Robert C. Martin's Package Coupling metrics (Ca, Ce, Instability, Abstractness, Distance from Main Sequence) and dominator bottlenecks.",
+                        "description": "Compute package coupling metrics (Ca, Ce, Instability, Abstractness, Distance from Main Sequence) and dominator bottlenecks.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -211,7 +224,7 @@ impl McpServer {
                     }),
                     json!({
                         "name": "deslop_capacity",
-                        "description": "Predicts concurrent user capacity, RPS throughput, and breaking points across hardware devices (Cloud, Local, RPi5, Mobile).",
+                        "description": "Estimate heuristic concurrent user capacity, RPS throughput, and breaking risks across hardware profiles.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -221,7 +234,7 @@ impl McpServer {
                     }),
                     json!({
                         "name": "deslop_testgen",
-                        "description": "Synthesizes characterization and property-based test suites to capture behavioral invariants before de-slopping or refactoring.",
+                        "description": "Generate characterization and property-based test stubs for symbols before refactoring.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -232,7 +245,7 @@ impl McpServer {
                     }),
                     json!({
                         "name": "deslop_prune_diff",
-                        "description": "Generates unified diff patch preview showing dead code to delete and tollbooth wrappers to collapse inline.",
+                        "description": "Preview a unified diff that removes dead code and inlines single-use tollbooth wrappers (read-only).",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -242,7 +255,7 @@ impl McpServer {
                     }),
                     json!({
                         "name": "deslop_scip",
-                        "description": "Exports the full symbol dependency graph into standardized Source Code Intelligence Protocol (SCIP) JSON.",
+                        "description": "Export the symbol dependency graph as SCIP JSON.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -252,7 +265,7 @@ impl McpServer {
                     }),
                     json!({
                         "name": "deslop_churn",
-                        "description": "Analyzes git commit history to detect churn hotspots and hidden temporal coupling (files that frequently co-change with 0 static imports).",
+                        "description": "Analyze git history for churn hotspots and hidden temporal coupling (files co-changing without static imports).",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -292,6 +305,14 @@ impl McpServer {
 
                 let (response_text, is_error) = match tool_name {
                     "deslop_scan" => (Self::call_scan(&target_path)?, false),
+                    "deslop_check" => {
+                        let base = args.get("base").and_then(|b| b.as_str());
+                        let max_slop = args.get("max_slop").and_then(|m| m.as_f64());
+                        match Self::call_check(&target_path, base, max_slop) {
+                            Ok(out) => (out, false),
+                            Err(e) => (e.to_string(), true),
+                        }
+                    }
                     "deslop_deloop" => (Self::call_deloop(&target_path)?, false),
                     "deslop_deep" => (Self::call_deep(&target_path)?, false),
                     "deslop_capacity" => (Self::call_capacity(&target_path)?, false),
@@ -307,7 +328,7 @@ impl McpServer {
                     }
                     _ => (
                         format!(
-                            "Unknown tool '{}'. Call tools/list to see available tools (deslop_scan, deslop_deloop, deslop_deep, deslop_capacity, deslop_testgen, deslop_prune_diff, deslop_scip, deslop_churn).",
+                            "Unknown tool '{}'. Call tools/list to see available tools (deslop_scan, deslop_check, deslop_deloop, deslop_deep, deslop_capacity, deslop_testgen, deslop_prune_diff, deslop_scip, deslop_churn).",
                             tool_name
                         ),
                         true,
@@ -441,6 +462,86 @@ impl McpServer {
         }
 
         Ok(out)
+    }
+
+    fn call_check(
+        path: &Path,
+        base: Option<&str>,
+        max_slop: Option<f64>,
+    ) -> anyhow::Result<String> {
+        let (parsed, graph, findings) = Self::scan_codebase(path)?;
+        let slop_index =
+            SlopDetectorEngine::calculate_slop_index(parsed.stats.total_lines_of_code, &findings);
+        let score_reliable =
+            deslop_detector::score_is_reliable(parsed.stats.total_lines_of_code);
+
+        if let Some(git_ref) = base {
+            let diff = crate::commands::baseline::diff_against(path, git_ref, &findings)?;
+            let blocking_findings: Vec<_> = diff
+                .new
+                .iter()
+                .filter(|f| crate::commands::baseline::blocks_gate(std::slice::from_ref(f)))
+                .cloned()
+                .collect();
+            let absolute_exceeded = max_slop.is_some_and(|t| slop_index > t);
+            let passed = !crate::commands::baseline::blocks_gate(&diff.new) && !absolute_exceeded;
+            let summary = if passed {
+                format!(
+                    "Passed against '{}': Slop Index {:.1}, {} new finding(s), {} resolved.",
+                    git_ref,
+                    slop_index,
+                    diff.new.len(),
+                    diff.resolved_count
+                )
+            } else {
+                format!(
+                    "Failed against '{}': Slop Index {:.1}, {} new finding(s), {} blocking.",
+                    git_ref,
+                    slop_index,
+                    diff.new.len(),
+                    blocking_findings.len()
+                )
+            };
+            let payload = json!({
+                "passed": passed,
+                "slop_index": slop_index,
+                "score_reliable": score_reliable,
+                "new_findings": diff.new,
+                "blocking_findings": blocking_findings,
+                "summary": summary,
+            });
+            return Ok(serde_json::to_string(&payload)?);
+        }
+
+        let threshold = max_slop.unwrap_or(crate::commands::check::DEFAULT_MAX_SLOP);
+        let has_cycles = !graph.find_circular_dependencies().is_empty();
+        let blocking_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| crate::commands::baseline::blocks_gate(std::slice::from_ref(f)))
+            .cloned()
+            .collect();
+        let passed = slop_index <= threshold && !has_cycles;
+        let summary = if passed {
+            format!(
+                "Passed: Slop Index {:.1} <= {:.1}, 0 cycles.",
+                slop_index, threshold
+            )
+        } else {
+            format!(
+                "Failed: Slop Index {:.1} (threshold {:.1}), {} blocking finding(s).",
+                slop_index,
+                threshold,
+                blocking_findings.len()
+            )
+        };
+        let payload = json!({
+            "passed": passed,
+            "slop_index": slop_index,
+            "score_reliable": score_reliable,
+            "blocking_findings": blocking_findings,
+            "summary": summary,
+        });
+        Ok(serde_json::to_string(&payload)?)
     }
 
     fn call_deloop(path: &Path) -> anyhow::Result<String> {

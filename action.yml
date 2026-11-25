@@ -1,0 +1,170 @@
+name: 'Deslop Architectural Quality Gate'
+description: 'Run deslop check or scan to gate on slop, architectural debt, and dependency cycles, or export SARIF/JSON.'
+
+inputs:
+  path:
+    description: 'Target directory path to analyze'
+    required: false
+    default: '.'
+  mode:
+    description: 'Subcommand to run: check or scan'
+    required: false
+    default: 'check'
+  base:
+    description: 'Git ref to diff against (e.g. origin/main) for --base'
+    required: false
+    default: ''
+  max-slop:
+    description: 'Maximum allowable slop index (0.0 to 100.0) for check mode (--max-slop)'
+    required: false
+    default: ''
+  format:
+    description: 'Output format for scan mode: table, json, or sarif (--format)'
+    required: false
+    default: ''
+  sarif-file:
+    description: 'Path to write SARIF output when mode is scan and format is sarif'
+    required: false
+    default: ''
+  version:
+    description: 'Release tag to download (e.g. v0.1.0), "latest", or "source" to build via cargo'
+    required: false
+    default: 'latest'
+
+outputs:
+  sarif-file:
+    description: 'Path to the generated SARIF file, if written'
+    value: ${{ steps.run-deslop.outputs.sarif-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install deslop
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        INSTALL_DIR="${RUNNER_TEMP:-/tmp}/deslop-bin"
+        mkdir -p "$INSTALL_DIR"
+        echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+
+        OS="$(uname -s)"
+        ARCH="$(uname -m)"
+        TARGET=""
+
+        case "$OS/$ARCH" in
+          Linux/x86_64)
+            TARGET="x86_64-unknown-linux-gnu"
+            ;;
+          Linux/aarch64|Linux/arm64)
+            TARGET="aarch64-unknown-linux-gnu"
+            ;;
+          Darwin/x86_64)
+            TARGET="x86_64-apple-darwin"
+            ;;
+          Darwin/aarch64|Darwin/arm64)
+            TARGET="aarch64-apple-darwin"
+            ;;
+          *)
+            echo "::warning::Unsupported platform ${OS}/${ARCH} for prebuilt binary; falling back to source build."
+            ;;
+        esac
+
+        INSTALLED=false
+
+        if [ "$INPUT_VERSION" != "source" ] && [ -n "$TARGET" ]; then
+          if [ "$INPUT_VERSION" = "latest" ]; then
+            DOWNLOAD_URL="https://github.com/Himan-D/deslop/releases/latest/download/deslop-${TARGET}.tar.gz"
+          else
+            DOWNLOAD_URL="https://github.com/Himan-D/deslop/releases/download/${INPUT_VERSION}/deslop-${TARGET}.tar.gz"
+          fi
+
+          TMP_TAR="${RUNNER_TEMP:-/tmp}/deslop-${TARGET}.tar.gz"
+          echo "Downloading deslop from ${DOWNLOAD_URL}..."
+          if curl -fsSL "$DOWNLOAD_URL" -o "$TMP_TAR"; then
+            TMP_EXTRACT="${RUNNER_TEMP:-/tmp}/deslop-extract"
+            rm -rf "$TMP_EXTRACT"
+            mkdir -p "$TMP_EXTRACT"
+            tar -xzf "$TMP_TAR" -C "$TMP_EXTRACT"
+            BIN_PATH="$(find "$TMP_EXTRACT" -name deslop -type f | head -n 1 || true)"
+            if [ -n "$BIN_PATH" ]; then
+              cp "$BIN_PATH" "$INSTALL_DIR/deslop"
+              chmod +x "$INSTALL_DIR/deslop"
+              INSTALLED=true
+              echo "Installed prebuilt deslop binary to ${INSTALL_DIR}/deslop"
+            else
+              echo "::warning::Archive did not contain a deslop binary; falling back to cargo."
+            fi
+          else
+            echo "::warning::Failed to download release archive (${DOWNLOAD_URL}); falling back to cargo."
+          fi
+        fi
+
+        if [ "$INSTALLED" = "false" ]; then
+          if ! command -v cargo >/dev/null 2>&1; then
+            echo "::error::Prebuilt binary unavailable and cargo is not installed on PATH."
+            exit 1
+          fi
+
+          CARGO_ROOT="${RUNNER_TEMP:-/tmp}/deslop-cargo"
+          mkdir -p "$CARGO_ROOT"
+
+          if [ "$INPUT_VERSION" != "source" ] && [ "$INPUT_VERSION" != "latest" ]; then
+            echo "Building deslop (${INPUT_VERSION}) from source via cargo install..."
+            cargo install --locked --git https://github.com/Himan-D/deslop --tag "$INPUT_VERSION" --root "$CARGO_ROOT"
+          else
+            echo "Building deslop from source via cargo install..."
+            cargo install --locked --git https://github.com/Himan-D/deslop --root "$CARGO_ROOT"
+          fi
+
+          cp "$CARGO_ROOT/bin/deslop" "$INSTALL_DIR/deslop"
+          chmod +x "$INSTALL_DIR/deslop"
+        fi
+
+    - name: Run deslop
+      id: run-deslop
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_MAX_SLOP: ${{ inputs.max-slop }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_SARIF_FILE: ${{ inputs.sarif-file }}
+      run: |
+        set -euo pipefail
+
+        case "$INPUT_MODE" in
+          check)
+            ARGS=("check" "$INPUT_PATH")
+            if [ -n "$INPUT_MAX_SLOP" ]; then
+              ARGS+=("--max-slop" "$INPUT_MAX_SLOP")
+            fi
+            if [ -n "$INPUT_BASE" ]; then
+              ARGS+=("--base" "$INPUT_BASE")
+            fi
+            deslop "${ARGS[@]}"
+            ;;
+          scan)
+            ARGS=("scan" "$INPUT_PATH")
+            if [ -n "$INPUT_FORMAT" ]; then
+              ARGS+=("--format" "$INPUT_FORMAT")
+            fi
+            if [ -n "$INPUT_BASE" ]; then
+              ARGS+=("--base" "$INPUT_BASE")
+            fi
+            if [ "$INPUT_FORMAT" = "sarif" ] && [ -n "$INPUT_SARIF_FILE" ]; then
+              mkdir -p "$(dirname "$INPUT_SARIF_FILE")"
+              deslop "${ARGS[@]}" > "$INPUT_SARIF_FILE"
+              echo "sarif-file=${INPUT_SARIF_FILE}" >> "$GITHUB_OUTPUT"
+            else
+              deslop "${ARGS[@]}"
+            fi
+            ;;
+          *)
+            echo "::error::Invalid mode '${INPUT_MODE}'. Expected 'check' or 'scan'."
+            exit 1
+            ;;
+        esac

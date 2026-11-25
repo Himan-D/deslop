@@ -16,14 +16,19 @@ edition = "2021"
 authors = ["Deslop Contributors"]
 license = "MIT OR Apache-2.0"
 description = "Codebase Inversion & Architectural De-slopping Engine in Rust"
+repository = "https://github.com/Himan-D/deslop"
+homepage = "https://github.com/Himan-D/deslop"
+keywords = ["architecture", "static-analysis", "mcp", "refactoring", "slop"]
+categories = ["development-tools", "command-line-utilities"]
+readme = "README.md"
 
 [workspace.dependencies]
-deslop-core = { path = "crates/deslop-core" }
-deslop-parser = { path = "crates/deslop-parser" }
-deslop-graph = { path = "crates/deslop-graph" }
-deslop-detector = { path = "crates/deslop-detector" }
-deslop-llm = { path = "crates/deslop-llm" }
-deslop-inversion = { path = "crates/deslop-inversion" }
+deslop-core = { path = "crates/deslop-core", version = "0.1.0" }
+deslop-parser = { path = "crates/deslop-parser", version = "0.1.0" }
+deslop-graph = { path = "crates/deslop-graph", version = "0.1.0" }
+deslop-detector = { path = "crates/deslop-detector", version = "0.1.0" }
+deslop-llm = { path = "crates/deslop-llm", version = "0.1.0" }
+deslop-inversion = { path = "crates/deslop-inversion", version = "0.1.0" }
 
 petgraph = { version = "0.6", features = ["serde-1"] }
 serde = { version = "1.0", features = ["derive"] }

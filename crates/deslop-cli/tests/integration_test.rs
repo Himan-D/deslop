@@ -327,6 +327,7 @@ fn test_architectural_layer_rules() {
             to: "controller".to_string(),
             description: Some("Repository layer cannot call controller layer".to_string()),
         }],
+        allow_exceptions: Vec::new(),
     };
 
     let s1 = Symbol {

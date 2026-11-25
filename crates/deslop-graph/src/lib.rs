@@ -29,9 +29,21 @@ pub trait GraphAnalyzer {
     fn analyze(graph: &SymbolGraph) -> Self::Report;
 }
 
+/// How an edge between two symbol nodes was resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeResolution {
+    /// Direct symbol ID hit, `Self::` same-file hit, or qualified `match_qualified` hit.
+    Exact,
+    /// Resolved via `normalize_callee` import alias, `file_imports`, or `tsconfig` path alias.
+    ImportScoped,
+    /// Resolved via unqualified bare-name global (`cands.len() == 1`) or same-file unqualified fallback.
+    BareHeuristic,
+}
+
 pub struct SymbolGraph {
     pub graph: DiGraph<Symbol, DependencyEdgeKind>,
     pub node_indices: HashMap<String, NodeIndex>,
+    edge_resolutions: HashMap<(NodeIndex, NodeIndex), EdgeResolution>,
 }
 
 impl SymbolGraph {
@@ -39,7 +51,13 @@ impl SymbolGraph {
         Self {
             graph: DiGraph::new(),
             node_indices: HashMap::new(),
+            edge_resolutions: HashMap::new(),
         }
+    }
+
+    /// Returns how the edge `from -> to` was resolved, if present in the graph.
+    pub fn edge_resolution(&self, from: NodeIndex, to: NodeIndex) -> Option<EdgeResolution> {
+        self.edge_resolutions.get(&(from, to)).copied()
     }
 
     pub fn from_parsed(symbols: &[Symbol], edges: &[DependencyEdge]) -> Self {
@@ -73,36 +91,61 @@ impl SymbolGraph {
             global.entry(short).or_default().push(idx);
         }
 
+        let tsconfig_aliases = find_tsconfig_aliases(symbols, imports);
+
         for edge in edges {
             let from_opt = sg.node_indices.get(&edge.from_symbol).copied();
-            let to_opt = sg.node_indices.get(&edge.to_symbol).copied().or_else(|| {
-                let caller_file = from_opt.map(|u| sg.graph[u].file_path.as_path());
-                let file_imports: &[Import] = caller_file
-                    .and_then(|f| imports.get(f))
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&[]);
-                let normalized = normalize_callee(&edge.to_symbol, file_imports);
-                let globs: Vec<&str> = file_imports
-                    .iter()
-                    .filter(|i| i.is_glob)
-                    .map(|i| i.path.as_str())
-                    .collect();
-                resolve_callee(
-                    &normalized,
-                    caller_file,
-                    &file_scoped,
-                    &global,
-                    &sg.graph,
-                    &globs,
-                )
-            });
+            let to_opt = sg
+                .node_indices
+                .get(&edge.to_symbol)
+                .copied()
+                .map(|idx| (idx, EdgeResolution::Exact))
+                .or_else(|| {
+                    let caller_file = from_opt.map(|u| sg.graph[u].file_path.as_path());
+                    let raw_imports: &[Import] = caller_file
+                        .and_then(|f| imports.get(f))
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    let expanded_storage: Vec<Import>;
+                    let file_imports: &[Import] = if tsconfig_aliases.is_empty() {
+                        raw_imports
+                    } else {
+                        expanded_storage = raw_imports
+                            .iter()
+                            .map(|imp| Import {
+                                local: imp.local.clone(),
+                                path: expand_tsconfig_import(&imp.path, &tsconfig_aliases),
+                                is_glob: imp.is_glob,
+                            })
+                            .collect();
+                        &expanded_storage
+                    };
+                    let (normalized, used_import_alias) =
+                        normalize_callee(&edge.to_symbol, file_imports);
+                    resolve_callee(
+                        &normalized,
+                        caller_file,
+                        &file_scoped,
+                        &global,
+                        &sg.graph,
+                        file_imports,
+                    )
+                    .map(|(idx, res)| {
+                        if used_import_alias {
+                            (idx, EdgeResolution::ImportScoped)
+                        } else {
+                            (idx, res)
+                        }
+                    })
+                });
 
-            if let (Some(u), Some(v)) = (from_opt, to_opt) {
+            if let (Some(u), Some((v, resolution))) = (from_opt, to_opt) {
                 // One edge per ordered pair: callers often reference the same
                 // symbol several ways (call + type mention), and degrees
                 // should count unique relationships, not mentions.
                 if u != v && !sg.graph.contains_edge(u, v) {
                     sg.graph.add_edge(u, v, edge.kind);
+                    sg.edge_resolutions.insert((u, v), resolution);
                 }
             }
         }
@@ -122,6 +165,35 @@ impl SymbolGraph {
                     .map(|idx| self.graph[idx].name.clone())
                     .collect();
                 cycles.push(cycle_names);
+            }
+        }
+
+        cycles
+    }
+
+    /// Tarjan's SCC to identify circular dependency loops (length > 1),
+    /// paired with whether any edge within the SCC was resolved via `BareHeuristic`.
+    pub fn find_circular_dependencies_with_confidence(&self) -> Vec<(Vec<String>, bool)> {
+        let sccs = tarjan_scc(&self.graph);
+        let mut cycles = Vec::new();
+
+        for scc in sccs {
+            if scc.len() > 1 {
+                let scc_set: HashSet<NodeIndex> = scc.iter().copied().collect();
+                let uses_bare_heuristic = scc.iter().any(|&u| {
+                    self.graph
+                        .neighbors_directed(u, Direction::Outgoing)
+                        .any(|v| {
+                            scc_set.contains(&v)
+                                && self.edge_resolution(u, v)
+                                    == Some(EdgeResolution::BareHeuristic)
+                        })
+                });
+                let cycle_names: Vec<String> = scc
+                    .into_iter()
+                    .map(|idx| self.graph[idx].name.clone())
+                    .collect();
+                cycles.push((cycle_names, uses_bare_heuristic));
             }
         }
 
@@ -266,12 +338,142 @@ fn short_name(qualified: &str) -> &str {
         .unwrap_or(qualified)
 }
 
+/// Reads `tsconfig.json` in `root` if present and extracts `compilerOptions.paths`
+/// prefix mappings (combined with `compilerOptions.baseUrl`), e.g.
+/// `"@/*": ["src/*"]` -> `"@" -> "src"`.
+pub fn load_tsconfig_aliases(root: &std::path::Path) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    let tsconfig_path = root.join("tsconfig.json");
+    let Ok(content) = std::fs::read_to_string(&tsconfig_path) else {
+        return aliases;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return aliases;
+    };
+    let Some(compiler_opts) = json.get("compilerOptions") else {
+        return aliases;
+    };
+
+    let base_url = compiler_opts
+        .get("baseUrl")
+        .and_then(|v| v.as_str())
+        .map(|s| {
+            let trimmed = s.trim().trim_start_matches("./").trim_end_matches('/');
+            if trimmed == "." {
+                ""
+            } else {
+                trimmed
+            }
+        })
+        .unwrap_or("");
+
+    if let Some(paths) = compiler_opts.get("paths").and_then(|v| v.as_object()) {
+        for (pattern, targets_val) in paths {
+            let Some(target) = targets_val
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+            let alias_key = pattern
+                .trim_end_matches("/*")
+                .trim_end_matches('*')
+                .trim_end_matches('/');
+            if alias_key.is_empty() {
+                continue;
+            }
+            let raw_target = target
+                .trim()
+                .trim_start_matches("./")
+                .trim_end_matches("/*")
+                .trim_end_matches('*')
+                .trim_end_matches('/');
+            let full_target = if base_url.is_empty() || base_url == "." {
+                raw_target.to_string()
+            } else if raw_target.is_empty() || raw_target == "." {
+                base_url.to_string()
+            } else {
+                format!("{}/{}", base_url, raw_target)
+            };
+            if !full_target.is_empty() {
+                aliases.insert(alias_key.to_string(), full_target);
+            }
+        }
+    }
+
+    aliases
+}
+
+/// Expands a `tsconfig` path alias prefix in `import_path` using `aliases`,
+/// returning `import_path` unchanged if no alias matches.
+pub fn expand_tsconfig_import(import_path: &str, aliases: &HashMap<String, String>) -> String {
+    if aliases.is_empty() {
+        return import_path.to_string();
+    }
+    let mut keys: Vec<&String> = aliases.keys().collect();
+    keys.sort_by(|a, b| b.len().cmp(&a.len()));
+    for key in keys {
+        if import_path == key.as_str() {
+            return aliases[key].clone();
+        }
+        if let Some(rest) = import_path.strip_prefix(key.as_str()) {
+            if let Some(after_slash) = rest.strip_prefix('/') {
+                return format!("{}/{}", aliases[key], after_slash);
+            }
+        }
+    }
+    import_path.to_string()
+}
+
+fn find_tsconfig_aliases(
+    symbols: &[Symbol],
+    imports: &HashMap<std::path::PathBuf, Vec<Import>>,
+) -> HashMap<String, String> {
+    let paths: Vec<&std::path::Path> = if !imports.is_empty() {
+        imports.keys().map(|p| p.as_path()).collect()
+    } else {
+        symbols.iter().map(|s| s.file_path.as_path()).collect()
+    };
+    let Some(mut common) = common_dir_prefix(&paths) else {
+        return HashMap::new();
+    };
+    loop {
+        if common.join("tsconfig.json").is_file() {
+            return load_tsconfig_aliases(&common);
+        }
+        if !common.pop() {
+            break;
+        }
+    }
+    HashMap::new()
+}
+
+fn common_dir_prefix(paths: &[&std::path::Path]) -> Option<std::path::PathBuf> {
+    let first = paths.first()?;
+    let mut prefix: Vec<_> = first.parent().unwrap_or(first).components().collect();
+    for path in &paths[1..] {
+        let comps: Vec<_> = path.parent().unwrap_or(path).components().collect();
+        let common_len = prefix
+            .iter()
+            .zip(comps.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        prefix.truncate(common_len);
+    }
+    if prefix.is_empty() {
+        Some(std::path::PathBuf::new())
+    } else {
+        Some(prefix.into_iter().collect())
+    }
+}
+
 /// Rewrites a callee through the caller's `use` imports: strips
 /// module-relative heads (`crate::`, `self::`, `super::`) and expands the
 /// head segment through renames (`PStore::charge` with
 /// `use payments::Store as PStore` becomes `payments::Store::charge`).
 /// Single-level only; alias chains are not followed.
-fn normalize_callee(callee: &str, imports: &[Import]) -> String {
+fn normalize_callee(callee: &str, imports: &[Import]) -> (String, bool) {
     let mut norm = callee.replace('.', "::");
     loop {
         if let Some(rest) = norm
@@ -287,10 +489,16 @@ fn normalize_callee(callee: &str, imports: &[Import]) -> String {
     if let Some((head, tail)) = norm.split_once("::") {
         if let Some(imp) = imports.iter().find(|i| !i.is_glob && i.local == head) {
             let rewritten = format!("{}::{}", imp.path, tail);
-            return normalize_callee(&rewritten, &[]);
+            let (final_norm, _) = normalize_callee(&rewritten, &[]);
+            return (final_norm, true);
         }
+    } else if let Some(imp) = imports
+        .iter()
+        .find(|i| !i.is_glob && i.local == norm && i.path.contains("::"))
+    {
+        return (imp.path.clone(), true);
     }
-    norm
+    (norm, false)
 }
 
 /// Resolves a callee reference to a graph node without guessing:
@@ -308,22 +516,36 @@ fn resolve_callee(
     file_scoped: &HashMap<(&std::path::Path, &str), Vec<NodeIndex>>,
     global: &HashMap<&str, Vec<NodeIndex>>,
     graph: &DiGraph<Symbol, DependencyEdgeKind>,
-    globs: &[&str],
-) -> Option<NodeIndex> {
+    file_imports: &[Import],
+) -> Option<(NodeIndex, EdgeResolution)> {
     let short = short_name(callee);
     let is_self = callee == "Self" || callee.starts_with("Self::");
 
     if let Some(file) = caller_file {
         if let Some(cands) = file_scoped.get(&(file, short)) {
-            if cands.len() == 1 {
-                return Some(cands[0]);
+            if is_self {
+                if cands.len() == 1 {
+                    return Some((cands[0], EdgeResolution::Exact));
+                }
+                if let Some(hit) = match_qualified(callee, cands, graph) {
+                    return Some((hit, EdgeResolution::Exact));
+                }
+                return None;
             }
-            if let Some(hit) = match_qualified(callee, cands, graph) {
-                return Some(hit);
+            if callee.contains("::") {
+                if let Some(hit) = match_qualified(callee, cands, graph) {
+                    return Some((hit, EdgeResolution::Exact));
+                }
+                // Qualified call did not match a symbol in this file; fall through
+                // to global qualified / import-scoped resolution.
+            } else {
+                // Same-file unqualified call: pick the unique or first local match
+                // rather than leaking across files.
+                return cands
+                    .first()
+                    .copied()
+                    .map(|idx| (idx, EdgeResolution::BareHeuristic));
             }
-            // Same file, same short name (e.g. two `new()` methods): pick the
-            // first deterministically rather than leaking across files.
-            return cands.first().copied();
         }
         if is_self {
             return None;
@@ -338,34 +560,69 @@ fn resolve_callee(
         // enclosing-type fallback only. Never an unrelated same-named symbol.
         if let Some(cands) = cands {
             if let Some(hit) = match_qualified(callee, cands, graph) {
-                return Some(hit);
+                return Some((hit, EdgeResolution::Exact));
+            }
+            if cands.len() == 1 && (callee.starts_with('.') || callee.contains('/')) {
+                return Some((cands[0], EdgeResolution::ImportScoped));
             }
             if cands.len() > 1 {
                 if let Some(head) = callee.split("::").next() {
-                    if let Some(hit) = disambiguate_by_file(cands, graph, head) {
-                        return Some(hit);
+                    let hint = module_hint(head);
+                    if !hint.is_empty() {
+                        if let Some(hit) = disambiguate_by_file(cands, graph, hint) {
+                            return Some((hit, EdgeResolution::ImportScoped));
+                        }
                     }
                 }
             }
         }
-        return resolve_enclosing_type(callee, caller_file, file_scoped, global, graph);
+        return resolve_enclosing_type(callee, caller_file, file_scoped, global, graph)
+            .map(|idx| (idx, EdgeResolution::Exact));
     }
 
     if let Some(cands) = cands {
         if cands.len() == 1 {
-            return Some(cands[0]);
+            return Some((cands[0], EdgeResolution::BareHeuristic));
         }
-        for glob in globs {
-            let seg = glob.rsplit("::").next().unwrap_or(glob);
-            if let Some(hit) = disambiguate_by_file(cands, graph, seg) {
-                return Some(hit);
+        for imp in file_imports
+            .iter()
+            .filter(|i| i.is_glob || i.local == callee)
+        {
+            let hint = module_hint(&imp.path);
+            if !hint.is_empty() {
+                if let Some(hit) = disambiguate_by_file(cands, graph, hint) {
+                    return Some((hit, EdgeResolution::ImportScoped));
+                }
             }
         }
         if let Some(hit) = match_qualified(callee, cands, graph) {
-            return Some(hit);
+            return Some((hit, EdgeResolution::Exact));
         }
     }
     None
+}
+
+/// Extracts the last meaningful module/file segment from an import path across
+/// `::`, `/`, and `.`, ignoring leading `./` or `../` and trailing source
+/// extensions (`.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.go`).
+fn module_hint(path: &str) -> &str {
+    let mut p = path.trim();
+    loop {
+        if let Some(rest) = p.strip_prefix("./").or_else(|| p.strip_prefix("../")) {
+            p = rest;
+        } else {
+            break;
+        }
+    }
+    for ext in [".tsx", ".ts", ".jsx", ".js", ".py", ".go"] {
+        if let Some(stem) = p.strip_suffix(ext) {
+            p = stem;
+            break;
+        }
+    }
+    p.rsplit([':', '/', '.'])
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
 }
 
 /// Narrows same-named candidates to the one living in the hinted file or
@@ -863,6 +1120,67 @@ mod tests {
     }
 
     #[test]
+    fn relative_ts_import_disambiguates_colliding_function() {
+        let symbols = vec![
+            sym("app.ts::render", "render", "app.ts", Visibility::Public),
+            sym("date.ts::format", "format", "date.ts", Visibility::Public),
+            sym("other.ts::format", "format", "other.ts", Visibility::Public),
+        ];
+        let edges = vec![edge("app.ts::render", "format")];
+        let imports = imports_for("app.ts", &[("format", "./date")]);
+        let sg = SymbolGraph::from_parsed_with_imports(&symbols, &edges, &imports);
+        assert_eq!(
+            outgoing_names(&sg, "app.ts::render"),
+            vec!["date.ts::format"]
+        );
+    }
+
+    #[test]
+    fn dotted_and_slashed_module_imports_disambiguate() {
+        let symbols = vec![
+            sym("main.py::run", "run", "main.py", Visibility::Public),
+            sym("sub.py::parse", "parse", "sub.py", Visibility::Public),
+            sym("other.py::parse", "parse", "other.py", Visibility::Public),
+            sym("main.go::serve", "serve", "main.go", Visibility::Public),
+            sym("http.go::Get", "Get", "http.go", Visibility::Public),
+            sym("other.go::Get", "Get", "other.go", Visibility::Public),
+        ];
+        let edges = vec![
+            edge("main.py::run", "parse"),
+            edge("main.go::serve", "Get"),
+        ];
+        let mut imports = imports_for("main.py", &[("parse", "pkg.sub")]);
+        imports.extend(imports_for("main.go", &[("Get", "net/http")]));
+        let sg = SymbolGraph::from_parsed_with_imports(&symbols, &edges, &imports);
+        assert_eq!(outgoing_names(&sg, "main.py::run"), vec!["sub.py::parse"]);
+        assert_eq!(outgoing_names(&sg, "main.go::serve"), vec!["http.go::Get"]);
+    }
+
+    #[test]
+    fn same_file_qualified_call_does_not_falsely_resolve() {
+        let symbols = vec![
+            sym("mod.rs::run", "run", "mod.rs", Visibility::Public),
+            method(
+                "mod.rs::Foo::new",
+                "Foo::new",
+                "mod.rs",
+                Visibility::Private,
+                false,
+            ),
+            method(
+                "mod.rs::Baz::new",
+                "Baz::new",
+                "mod.rs",
+                Visibility::Private,
+                false,
+            ),
+        ];
+        let edges = vec![edge("mod.rs::run", "Bar::new")];
+        let sg = SymbolGraph::from_parsed(&symbols, &edges);
+        assert!(outgoing_names(&sg, "mod.rs::run").is_empty());
+    }
+
+    #[test]
     fn truly_dead_private_fn_still_flagged() {
         let symbols = vec![
             sym("lib.rs::live", "live", "lib.rs", Visibility::Public),
@@ -872,5 +1190,147 @@ mod tests {
         let orphans = sg.find_unreachable_orphans();
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].name, "dead");
+    }
+
+    #[test]
+    fn edge_resolution_distinguishes_exact_import_and_bare_heuristic() {
+        let symbols = vec![
+            sym("a.rs::alpha", "alpha", "a.rs", Visibility::Public),
+            sym("a.rs::local_fn", "local_fn", "a.rs", Visibility::Private),
+            sym("b.rs::beta", "beta", "b.rs", Visibility::Public),
+            sym("c.rs::gamma", "gamma", "c.rs", Visibility::Public),
+            sym("d.rs::gamma", "gamma", "d.rs", Visibility::Public),
+            sym("e.rs::unique_fn", "unique_fn", "e.rs", Visibility::Public),
+        ];
+        let edges = vec![
+            // Direct ID hit -> Exact
+            edge("a.rs::alpha", "b.rs::beta"),
+            // Same-file unqualified fallback -> BareHeuristic
+            edge("a.rs::alpha", "local_fn"),
+            // Import-scoped disambiguation -> ImportScoped
+            edge("a.rs::alpha", "gamma"),
+            // Global single-candidate bare name -> BareHeuristic
+            edge("b.rs::beta", "unique_fn"),
+            // Cycle back from unique_fn -> a.rs::alpha via direct ID -> Exact
+            edge("e.rs::unique_fn", "a.rs::alpha"),
+        ];
+        let imports = imports_for("a.rs", &[("gamma", "c")]);
+        let sg = SymbolGraph::from_parsed_with_imports(&symbols, &edges, &imports);
+
+        let a = sg.node_indices["a.rs::alpha"];
+        let local = sg.node_indices["a.rs::local_fn"];
+        let b = sg.node_indices["b.rs::beta"];
+        let c = sg.node_indices["c.rs::gamma"];
+        let e = sg.node_indices["e.rs::unique_fn"];
+
+        assert_eq!(sg.edge_resolution(a, b), Some(EdgeResolution::Exact));
+        assert_eq!(
+            sg.edge_resolution(a, local),
+            Some(EdgeResolution::BareHeuristic)
+        );
+        assert_eq!(sg.edge_resolution(a, c), Some(EdgeResolution::ImportScoped));
+        assert_eq!(
+            sg.edge_resolution(b, e),
+            Some(EdgeResolution::BareHeuristic)
+        );
+        assert_eq!(sg.edge_resolution(e, a), Some(EdgeResolution::Exact));
+
+        // Cycle (alpha -> beta -> unique_fn -> alpha) contains a BareHeuristic edge (beta -> unique_fn)
+        let cycles = sg.find_circular_dependencies_with_confidence();
+        assert_eq!(cycles.len(), 1);
+        assert!(cycles[0].1);
+
+        // A cycle with only Exact edges reports uses_bare_heuristic = false
+        let exact_symbols = vec![
+            sym("x.rs::x", "x", "x.rs", Visibility::Public),
+            sym("y.rs::y", "y", "y.rs", Visibility::Public),
+        ];
+        let exact_edges = vec![edge("x.rs::x", "y.rs::y"), edge("y.rs::y", "x.rs::x")];
+        let exact_sg = SymbolGraph::from_parsed(&exact_symbols, &exact_edges);
+        let exact_cycles = exact_sg.find_circular_dependencies_with_confidence();
+        assert_eq!(exact_cycles.len(), 1);
+        assert!(!exact_cycles[0].1);
+    }
+
+    #[test]
+    fn tsconfig_alias_expands_and_disambiguates_import() {
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("deslop_tsconfig_test_{}", unique_id));
+        let src_dir = root.join("src");
+        let lib_dir = src_dir.join("lib");
+        let other_dir = root.join("other");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::create_dir_all(&other_dir).unwrap();
+
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@auth": ["src/lib/auth"]
+    }
+  }
+}"#,
+        )
+        .unwrap();
+
+        let aliases = load_tsconfig_aliases(&root);
+        assert_eq!(aliases.get("@").map(String::as_str), Some("src"));
+        assert_eq!(
+            expand_tsconfig_import("@/lib/auth", &aliases),
+            "src/lib/auth"
+        );
+        assert_eq!(expand_tsconfig_import("@auth", &aliases), "src/lib/auth");
+        assert_eq!(expand_tsconfig_import("lodash", &aliases), "lodash");
+
+        let app_file = src_dir.join("app.ts");
+        let auth_file = lib_dir.join("auth.ts");
+        let other_file = other_dir.join("legacy.ts");
+
+        let app_str = app_file.to_string_lossy().to_string();
+        let auth_str = auth_file.to_string_lossy().to_string();
+        let other_str = other_file.to_string_lossy().to_string();
+
+        let symbols = vec![
+            sym(&format!("{}::main", app_str), "main", &app_str, Visibility::Public),
+            sym(
+                &format!("{}::authenticate", auth_str),
+                "authenticate",
+                &auth_str,
+                Visibility::Public,
+            ),
+            sym(
+                &format!("{}::authenticate", other_str),
+                "authenticate",
+                &other_str,
+                Visibility::Public,
+            ),
+        ];
+        let edges = vec![edge(&format!("{}::main", app_str), "authenticate")];
+        let mut imports = HashMap::new();
+        imports.insert(
+            app_file,
+            vec![Import {
+                local: "authenticate".to_string(),
+                path: "@auth".to_string(),
+                is_glob: false,
+            }],
+        );
+
+        let sg = SymbolGraph::from_parsed_with_imports(&symbols, &edges, &imports);
+        let main_id = format!("{}::main", app_str);
+        let auth_id = format!("{}::authenticate", auth_str);
+        assert_eq!(outgoing_names(&sg, &main_id), vec![auth_id.clone()]);
+        assert_eq!(
+            sg.edge_resolution(sg.node_indices[&main_id], sg.node_indices[&auth_id]),
+            Some(EdgeResolution::ImportScoped)
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
