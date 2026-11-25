@@ -14,3 +14,5 @@ description = "Slop and anti-pattern detection engine for deslop"
 [dependencies]
 deslop-core = { workspace = true }
 deslop-graph = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }

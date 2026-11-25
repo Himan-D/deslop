@@ -1,6 +1,6 @@
 use crate::{DetectionContext, DetectionRule};
 use deslop_core::{AUX_PATH_ATTR, Severity, SlopFinding, SlopKind, Symbol};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 const RULE_HARDCODED_SECRET: &str = "hardcoded-secret";
@@ -79,15 +79,34 @@ impl DetectionRule for SecurityRule {
                 .unwrap_or_default();
 
             let is_rust = ext == "rs";
+            let is_python = ext == "py";
             let is_js_family = matches!(
                 ext.as_str(),
                 "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs"
             );
 
+            let mut in_block_comment = false;
+            let mut in_py_docstring: Option<&'static str> = None;
+            let mut tainted_vars: HashSet<String> = HashSet::new();
+
             for (idx, line) in lines.iter().enumerate() {
                 let trimmed = line.trim();
+                if update_multiline_comment_state(
+                    trimmed,
+                    is_python,
+                    &mut in_block_comment,
+                    &mut in_py_docstring,
+                ) {
+                    continue;
+                }
                 if trimmed.is_empty() || is_comment_line(trimmed) {
                     continue;
+                }
+
+                if check_injection {
+                    if let Some(var_name) = detect_tainted_assignment(line) {
+                        tainted_vars.insert(var_name);
+                    }
                 }
 
                 let line_num = idx + 1;
@@ -112,7 +131,7 @@ impl DetectionRule for SecurityRule {
                 }
 
                 if check_injection {
-                    if let Some(detail) = detect_injection_sink(&lines, idx) {
+                    if let Some(detail) = detect_injection_sink(&lines, idx, &tainted_vars) {
                         findings.push(SlopFinding {
                             kind: SlopKind::InjectionSink,
                             symbol_id: symbol_id.clone(),
@@ -163,7 +182,7 @@ impl DetectionRule for SecurityRule {
                 }
 
                 if check_unsafe {
-                    if let Some(detail) =
+                    if let Some((severity, confidence, detail)) =
                         detect_unsafe_audit(&lines, idx, is_rust, is_js_family)
                     {
                         findings.push(SlopFinding {
@@ -171,11 +190,11 @@ impl DetectionRule for SecurityRule {
                             symbol_id,
                             file_path: path.clone(),
                             line: line_num,
-                            severity: Severity::Medium,
-                            confidence: 0.85,
+                            severity,
+                            confidence,
                             title: "Unsafe / Insecure Audit Finding".to_string(),
                             description: format!("{detail} `{snippet}`"),
-                            remediation: "Document `// SAFETY:` invariants above `unsafe` blocks, avoid `dangerouslySetInnerHTML` with untrusted data, and use `https://` for non-local URLs.".to_string(),
+                            remediation: "Document `// SAFETY:` invariants above `unsafe` blocks, avoid `dangerouslySetInnerHTML` with untrusted data, enable TLS certificate verification, avoid wildcard CORS with credentials, and use `https://` for non-local URLs.".to_string(),
                             estimated_lines_saved: 0,
                         });
                     }
@@ -204,6 +223,103 @@ fn is_comment_line(trimmed: &str) -> bool {
             && !trimmed.starts_with("#!["))
         || trimmed.starts_with("/*")
         || trimmed.starts_with('*')
+}
+
+/// Updates multi-line block-comment (`/* ... */`) and Python docstring (`"""` / `'''`)
+/// state across lines. Returns `true` if the current line should be skipped entirely.
+fn update_multiline_comment_state(
+    trimmed: &str,
+    is_python: bool,
+    in_block_comment: &mut bool,
+    in_py_docstring: &mut Option<&'static str>,
+) -> bool {
+    if is_python {
+        if let Some(delim) = *in_py_docstring {
+            if trimmed.contains(delim) {
+                *in_py_docstring = None;
+            }
+            return true;
+        }
+        for delim in ["\"\"\"", "'''"] {
+            if let Some(rest) = trimmed.strip_prefix(delim) {
+                if !rest.contains(delim) {
+                    *in_py_docstring = Some(delim);
+                }
+                return true;
+            }
+            if trimmed.matches(delim).count() % 2 == 1 {
+                *in_py_docstring = Some(delim);
+                return false;
+            }
+        }
+        return false;
+    }
+
+    let bytes = trimmed.as_bytes();
+    let mut i = 0;
+    let mut started_with_block = false;
+    let mut has_code_outside_block = false;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+
+    if *in_block_comment {
+        if let Some(end_pos) = trimmed.find("*/") {
+            *in_block_comment = false;
+            i = end_pos + 2;
+            if trimmed[i..].trim().is_empty() {
+                return true;
+            }
+        } else {
+            return true;
+        }
+    }
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'"' || b == b'\'' || b == b'`' {
+            has_code_outside_block = true;
+            quote = Some(b);
+            i += 1;
+            continue;
+        }
+
+        if b == b'/' && i + 1 < bytes.len() {
+            if bytes[i + 1] == b'/' {
+                break;
+            }
+            if bytes[i + 1] == b'*' {
+                if i == 0 {
+                    started_with_block = true;
+                }
+                if let Some(rel_end) = trimmed[i + 2..].find("*/") {
+                    i = i + 2 + rel_end + 2;
+                    continue;
+                } else {
+                    *in_block_comment = true;
+                    return started_with_block && !has_code_outside_block;
+                }
+            }
+        }
+
+        if !b.is_ascii_whitespace() {
+            has_code_outside_block = true;
+        }
+        i += 1;
+    }
+
+    started_with_block && !has_code_outside_block
 }
 
 fn truncate_snippet(s: &str, max_chars: usize) -> String {
@@ -389,7 +505,118 @@ fn is_placeholder_secret(val: &str) -> bool {
     PLACEHOLDERS.iter().any(|p| lower.contains(p))
 }
 
-fn detect_injection_sink(lines: &[&str], idx: usize) -> Option<&'static str> {
+fn has_interp_or_concat(s: &str) -> bool {
+    s.contains('+')
+        || s.contains("${")
+        || s.contains("f\"")
+        || s.contains("f'")
+        || s.contains(concat!("for", "mat!("))
+        || s.contains(".format(")
+        || s.contains("fmt.Sprintf(")
+}
+
+fn split_assignment(line: &str) -> Option<(&str, &str)> {
+    if let Some(pos) = line.find(":=") {
+        return Some((&line[..pos], &line[pos + 2..]));
+    }
+    let bytes = line.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b != b'=' {
+            continue;
+        }
+        let prev = i.checked_sub(1).map(|p| bytes[p]);
+        let next = bytes.get(i + 1).copied();
+        if matches!(prev, Some(b'=') | Some(b'!') | Some(b'<') | Some(b'>')) {
+            continue;
+        }
+        if matches!(next, Some(b'=') | Some(b'>')) {
+            continue;
+        }
+        return Some((&line[..i], &line[i + 1..]));
+    }
+    None
+}
+
+fn detect_tainted_assignment(line: &str) -> Option<String> {
+    let (lhs, rhs) = split_assignment(line)?;
+    if !has_interp_or_concat(rhs) {
+        return None;
+    }
+
+    let lhs_no_type = lhs.split(':').next().unwrap_or(lhs);
+    let var = lhs_no_type.split_whitespace().last()?;
+    if var.is_empty()
+        || !var
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        || !var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+
+    let upper_rhs = rhs.to_ascii_uppercase();
+    let is_sql = ["SELECT ", "INSERT ", "UPDATE ", "DELETE "]
+        .iter()
+        .any(|kw| upper_rhs.contains(kw));
+    let lower_var = var.to_ascii_lowercase();
+    let is_shell = [
+        "rm ", "sh ", "bash ", "zsh ", "curl ", "wget ", "ls ", "cat ", "echo ", "mkdir ",
+        "cp ", "mv ", "chmod ", "chown ", "kill ", "-c ", "&&", "| ",
+    ]
+    .iter()
+    .any(|tok| rhs.contains(tok))
+        || lower_var.contains("cmd")
+        || lower_var.contains("command")
+        || lower_var.contains("shell");
+
+    if is_sql || is_shell {
+        Some(var.to_string())
+    } else {
+        None
+    }
+}
+
+fn detect_tainted_sink(line: &str, tainted_vars: &HashSet<String>) -> Option<&'static str> {
+    if tainted_vars.is_empty() {
+        return None;
+    }
+
+    let sink_calls = [
+        concat!("exec", "ute("),
+        concat!("que", "ry("),
+        concat!("ra", "w("),
+        concat!("os.", "system("),
+        concat!("sub", "process.run("),
+        concat!("sub", "process.Popen("),
+        concat!("sub", "process.call("),
+        concat!("sub", "process.check_output("),
+    ];
+
+    for call in sink_calls {
+        for (pos, _) in line.match_indices(call) {
+            if !has_word_boundary_before(line, pos) {
+                continue;
+            }
+            let args_start = pos + call.len();
+            let args = &line[args_start..];
+            if tainted_vars
+                .iter()
+                .any(|var| contains_identifier(args, var))
+            {
+                return Some("Detected sink call passing tainted interpolated variable:");
+            }
+        }
+    }
+
+    None
+}
+
+fn detect_injection_sink(
+    lines: &[&str],
+    idx: usize,
+    tainted_vars: &HashSet<String>,
+) -> Option<&'static str> {
     let line = lines[idx];
 
     // JS/TS/Python dynamic code evaluation
@@ -437,24 +664,17 @@ fn detect_injection_sink(lines: &[&str], idx: usize) -> Option<&'static str> {
         line.match_indices(call)
             .any(|(pos, _)| has_word_boundary_before(line, pos))
     });
-    if has_sql_call {
-        let has_interp_or_concat = line.contains('+')
-            || line.contains("${")
-            || line.contains("f\"")
-            || line.contains("f'")
-            || line.contains(concat!("for", "mat!("));
-        if has_interp_or_concat {
-            let upper = line.to_ascii_uppercase();
-            let has_sql_kw = ["SELECT ", "INSERT ", "UPDATE ", "DELETE "]
-                .iter()
-                .any(|kw| upper.contains(kw));
-            if has_sql_kw {
-                return Some("Detected SQL query call with string interpolation/concatenation:");
-            }
+    if has_sql_call && has_interp_or_concat(line) {
+        let upper = line.to_ascii_uppercase();
+        let has_sql_kw = ["SELECT ", "INSERT ", "UPDATE ", "DELETE "]
+            .iter()
+            .any(|kw| upper.contains(kw));
+        if has_sql_kw {
+            return Some("Detected SQL query call with string interpolation/concatenation:");
         }
     }
 
-    None
+    detect_tainted_sink(line, tainted_vars)
 }
 
 fn detect_unsafe_deserialization(line: &str) -> Option<&'static str> {
@@ -522,8 +742,38 @@ fn detect_unsafe_audit(
     idx: usize,
     is_rust: bool,
     is_js_family: bool,
-) -> Option<&'static str> {
+) -> Option<(Severity, f64, &'static str)> {
     let line = lines[idx];
+
+    if line.contains("verify=False")
+        || line.contains("verify = False")
+        || line.contains("rejectUnauthorized: false")
+        || line.contains("rejectUnauthorized:false")
+        || line.contains("danger_accept_invalid_certs(true)")
+    {
+        return Some((
+            Severity::High,
+            0.9,
+            "Detected disabled TLS certificate verification:",
+        ));
+    }
+
+    if line.contains("Access-Control-Allow-Origin") && line.contains('*') {
+        let start = idx.saturating_sub(1);
+        let end = (idx + 1).min(lines.len().saturating_sub(1));
+        let has_credentials = lines[start..=end].iter().any(|l| {
+            l.contains("credentials: true")
+                || l.contains("credentials:true")
+                || l.contains("allow_credentials(true)")
+        });
+        if has_credentials {
+            return Some((
+                Severity::Medium,
+                0.85,
+                "Detected wildcard CORS `Access-Control-Allow-Origin: *` with credentials enabled:",
+            ));
+        }
+    }
 
     if is_rust && has_rust_unsafe(line) {
         let start = idx.saturating_sub(2);
@@ -531,19 +781,31 @@ fn detect_unsafe_audit(
             .iter()
             .any(|l| l.contains("SAFETY:"));
         if !has_safety {
-            return Some("Detected Rust `unsafe` without a `SAFETY:` comment:");
+            return Some((
+                Severity::Medium,
+                0.85,
+                "Detected Rust `unsafe` without a `SAFETY:` comment:",
+            ));
         }
     }
 
     if is_js_family {
         let dangerous_html = concat!("dangerously", "SetInnerHTML");
         if line.contains(dangerous_html) {
-            return Some("Detected `dangerouslySetInnerHTML` DOM sink:");
+            return Some((
+                Severity::Medium,
+                0.85,
+                "Detected `dangerouslySetInnerHTML` DOM sink:",
+            ));
         }
     }
 
     if has_non_local_http_literal(line) {
-        return Some("Detected non-localhost `http://` URL literal:");
+        return Some((
+            Severity::Medium,
+            0.85,
+            "Detected non-localhost `http://` URL literal:",
+        ));
     }
 
     None
@@ -854,5 +1116,112 @@ mod tests {
             ..Default::default()
         };
         assert!(run_security(&syms, Some(&cfg_disabled)).is_empty());
+    }
+
+    #[test]
+    fn ignores_multiline_block_comments_and_python_docstrings() {
+        let dir = TempDirGuard::new("comments");
+        let js_content = format!(
+            "/* {eval_call}(\"x\") */\n\
+             /*\n\
+               {eval_call}(\"multi\");\n\
+               const api_key = \"super_secret_production_value_123\";\n\
+             */\n\
+             const glob = \"src/*\";\n\
+             {eval_call}(\"real\");\n",
+            eval_call = concat!("ev", "al"),
+        );
+        let js_file = dir.write_file("src/commented.ts", &js_content);
+
+        let py_content = format!(
+            "def f():\n\
+                 \"\"\"\n\
+                 {eval_call}(\"docstring\")\n\
+                 \"\"\"\n\
+                 ''' {eval_call}(\"single_line_docstring\") '''\n\
+                 return 1\n",
+            eval_call = concat!("ev", "al"),
+        );
+        let py_file = dir.write_file("src/commented.py", &py_content);
+
+        let syms = vec![make_sym(js_file, "js_fn"), make_sym(py_file, "f")];
+        let findings = run_security(&syms, None);
+        assert_eq!(findings.len(), 1, "expected only real eval, got {findings:?}");
+        assert_eq!(findings[0].line, 7);
+        assert_eq!(findings[0].kind, SlopKind::InjectionSink);
+    }
+
+    #[test]
+    fn detects_two_step_tainted_variable_sinks() {
+        let dir = TempDirGuard::new("tainted");
+        let ts_content = "\
+            const sql = `SELECT * FROM users WHERE id = ${userId}`;\n\
+            db.query(sql);\n\
+            const safe = \"SELECT * FROM users WHERE id = $1\";\n\
+            db.query(safe);\n";
+        let ts_file = dir.write_file("src/repo.ts", ts_content);
+
+        let rs_content = format!(
+            "let q = {}!(\"SELECT * FROM items WHERE id = {{}}\", id);\n\
+             conn.execute(&q);\n",
+            concat!("for", "mat"),
+        );
+        let rs_file = dir.write_file("src/repo.rs", &rs_content);
+
+        let py_content = format!(
+            "cmd = f\"rm {{target}}\"\n\
+             {subproc}(cmd)\n",
+            subproc = concat!("sub", "process.run"),
+        );
+        let py_file = dir.write_file("src/runner.py", &py_content);
+
+        let syms = vec![
+            make_sym(ts_file, "get_user"),
+            make_sym(rs_file, "get_item"),
+            make_sym(py_file, "cleanup"),
+        ];
+        let findings = run_security(&syms, None);
+        assert_eq!(findings.len(), 3, "expected 3 tainted sink findings, got {findings:?}");
+        assert!(findings.iter().all(|f| f.kind == SlopKind::InjectionSink));
+        assert!(findings.iter().all(|f| f.severity == Severity::High));
+        assert!(findings.iter().all(|f| (f.confidence - 0.85).abs() < 1e-6));
+    }
+
+    #[test]
+    fn detects_disabled_tls_verification_and_wildcard_cors_with_credentials() {
+        let dir = TempDirGuard::new("tls_cors");
+        let py_file = dir.write_file(
+            "src/client.py",
+            "resp = requests.get(url, verify=False)\n",
+        );
+        let ts_file = dir.write_file(
+            "src/agent.ts",
+            "const agent = new https.Agent({ rejectUnauthorized: false });\n\
+             res.setHeader(\"Access-Control-Allow-Origin\", \"*\");\n\
+             const opts = { credentials: true };\n",
+        );
+        let rs_file = dir.write_file(
+            "src/http.rs",
+            "let client = reqwest::Client::builder().danger_accept_invalid_certs(true).build()?;\n\
+             let cors = CorsLayer::new().allow_origin(\"Access-Control-Allow-Origin: *\").allow_credentials(true);\n",
+        );
+
+        let syms = vec![
+            make_sym(py_file, "fetch"),
+            make_sym(ts_file, "handler"),
+            make_sym(rs_file, "build_client"),
+        ];
+        let findings = run_security(&syms, None);
+        assert_eq!(findings.len(), 5, "expected 3 TLS + 2 CORS findings, got {findings:?}");
+        assert!(findings.iter().all(|f| f.kind == SlopKind::UnsafeAudit));
+
+        let high_count = findings.iter().filter(|f| f.severity == Severity::High).count();
+        let med_count = findings.iter().filter(|f| f.severity == Severity::Medium).count();
+        assert_eq!(high_count, 3);
+        assert_eq!(med_count, 2);
+        assert!(findings
+            .iter()
+            .filter(|f| f.severity == Severity::High)
+            .all(|f| (f.confidence - 0.9).abs() < 1e-6));
     }
 }

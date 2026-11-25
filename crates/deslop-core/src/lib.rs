@@ -227,6 +227,10 @@ pub enum SlopKind {
     GodObject,
     /// Architectural layer or forbidden boundary rule violation (ArchUnit-style)
     LayerViolation,
+    /// Unused package declared in `package.json`, `Cargo.toml`, or `pyproject.toml`
+    UnusedDependency,
+    /// Orphaned source file never imported or referenced as an entrypoint
+    OrphanedFile,
     /// Hardcoded API key, private key, or high-entropy secret literal
     HardcodedSecret,
     /// Potential SQL, shell, or code-evaluation injection sink
@@ -284,6 +288,8 @@ pub struct ArchitectureConfig {
     pub forbidden_rules: Vec<ForbiddenRule>,
     #[serde(default)]
     pub allow_exceptions: Vec<AllowException>,
+    #[serde(default)]
+    pub isolated: Vec<String>,
     #[serde(default)]
     pub security: SecurityConfig,
 }

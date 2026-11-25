@@ -142,6 +142,12 @@ impl RefactorEngine {
                 Err(_) => continue,
             };
             let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+            if sym.span.start_line < 1
+                || sym.span.end_line < sym.span.start_line
+                || sym.span.end_line > lines.len()
+            {
+                continue;
+            }
             if let Some((_, target)) = Self::inline_target(f) {
                 if !is_forwarding_free_function(&lines, sym, &target) {
                     plan.skipped.push(SkippedItem {
@@ -680,6 +686,95 @@ mod tests {
         let set = RefactorEngine::rewrite_set(&findings, &symbols, &index).unwrap();
         assert!(set.rewrites.is_empty(), "must not rewrite a non-forwarder");
         assert_eq!(set.plan.skipped.len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dead_orphan_deletion_works_for_typescript_and_python() {
+        let dir = temp_dir("non-rust-dead-orphan");
+        let ts_file = dir.join("util.ts");
+        let ts_src = "function deadHelper(x: number): number {\n    return x + 1;\n}\nexport function liveMain(): number {\n    return 42;\n}\n";
+        fs::write(&ts_file, ts_src).unwrap();
+
+        let py_file = dir.join("helper.py");
+        let py_src = "def dead_py(x):\n    return x * 2\n\ndef live_py():\n    return 1\n";
+        fs::write(&py_file, py_src).unwrap();
+
+        let findings = vec![
+            finding(
+                SlopKind::DeadOrphan,
+                &ts_file,
+                &format!("{}::deadHelper", ts_file.display()),
+                "Unreachable Symbol: `deadHelper`",
+                "deadHelper",
+            ),
+            finding(
+                SlopKind::DeadOrphan,
+                &py_file,
+                &format!("{}::dead_py", py_file.display()),
+                "Unreachable Symbol: `dead_py`",
+                "dead_py",
+            ),
+        ];
+        let symbols = vec![
+            sym(
+                &format!("{}::deadHelper", ts_file.display()),
+                "deadHelper",
+                &ts_file,
+                1,
+                3,
+            ),
+            sym(
+                &format!("{}::dead_py", py_file.display()),
+                "dead_py",
+                &py_file,
+                1,
+                2,
+            ),
+        ];
+
+        let set =
+            RefactorEngine::rewrite_set(&findings, &symbols, &CallSiteIndex::default()).unwrap();
+        assert_eq!(set.plan.deletions.len(), 2);
+        assert_eq!(set.rewrites.len(), 2);
+
+        let ts_rewrite = set.rewrites.iter().find(|r| r.path == ts_file).unwrap();
+        assert_eq!(
+            ts_rewrite.updated,
+            "export function liveMain(): number {\n    return 42;\n}\n"
+        );
+
+        let py_rewrite = set.rewrites.iter().find(|r| r.path == py_file).unwrap();
+        assert_eq!(py_rewrite.updated, "\ndef live_py():\n    return 1\n");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dead_orphan_with_out_of_bounds_span_is_skipped() {
+        let dir = temp_dir("invalid-span");
+        let ts_file = dir.join("bad.ts");
+        fs::write(&ts_file, "export function live(): void {}\n").unwrap();
+
+        let findings = vec![finding(
+            SlopKind::DeadOrphan,
+            &ts_file,
+            &format!("{}::ghost", ts_file.display()),
+            "Unreachable Symbol: `ghost`",
+            "ghost",
+        )];
+        let symbols = vec![sym(
+            &format!("{}::ghost", ts_file.display()),
+            "ghost",
+            &ts_file,
+            1,
+            10,
+        )];
+
+        let set =
+            RefactorEngine::rewrite_set(&findings, &symbols, &CallSiteIndex::default()).unwrap();
+        assert!(set.rewrites.is_empty());
+        assert!(set.plan.deletions.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 }

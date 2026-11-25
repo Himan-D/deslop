@@ -86,6 +86,37 @@ fn match_single_segment(seg: &str, pat: &str) -> bool {
     pi == p.len()
 }
 
+/// Returns `(pattern, sibling_name)` if `path` falls inside an `isolated`
+/// directory pattern such as `src/features/*` or `crates/*`.
+pub fn isolated_group(path: &str, pattern: &str) -> Option<(String, String)> {
+    let normalized_path = path.replace('\\', "/");
+    let normalized_pat = pattern.replace('\\', "/");
+
+    let path_segs: Vec<&str> = normalized_path
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
+    let pat_segs: Vec<&str> = normalized_pat
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
+
+    let star_idx = pat_segs.iter().position(|&s| s == "*")?;
+    if path_segs.len() <= star_idx {
+        return None;
+    }
+    if !match_segments(&path_segs[..star_idx], &pat_segs[..star_idx]) {
+        return None;
+    }
+    if pat_segs.len() > star_idx + 1
+        && !match_segments(&path_segs[star_idx + 1..], &pat_segs[star_idx + 1..])
+    {
+        return None;
+    }
+
+    Some((normalized_pat, path_segs[star_idx].to_string()))
+}
+
 /// Evaluates ArchUnit-style declarative architectural rules and forbidden dependencies
 pub struct ArchitectureViolationRule;
 
@@ -244,6 +275,34 @@ fn check_edge_violations(
         }
     }
 
+    // Check isolated feature/module boundaries
+    for pat in &config.isolated {
+        if let (Some((pat_key, from_group)), Some((_, to_group))) =
+            (isolated_group(from_path, pat), isolated_group(to_path, pat))
+        {
+            if from_group != to_group {
+                findings.push(SlopFinding {
+                    kind: SlopKind::LayerViolation,
+                    symbol_id: symbol_id.to_string(),
+                    file_path: file_path.to_path_buf(),
+                    line,
+                    severity: Severity::High,
+                    confidence: 0.95,
+                    title: format!(
+                        "Isolated Feature Violation: '{}' -> '{}' ({})",
+                        from_group, to_group, pat_key
+                    ),
+                    description: format!(
+                        "Module '{}' in isolated group '{}' illegally imports '{}' from sibling group '{}' under '{}'.",
+                        from_path, from_group, to_path, to_group, pat_key
+                    ),
+                    remediation: "Extract shared types or logic into a common shared module outside the isolated boundary, or communicate via an explicit public interface.".to_string(),
+                    estimated_lines_saved: 0,
+                });
+            }
+        }
+    }
+
     findings.len() > before
 }
 
@@ -392,5 +451,50 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].symbol_id, "src/domain/order.ts::create");
         assert_eq!(findings[0].line, 12);
+    }
+
+    #[test]
+    fn isolated_group_extracts_prefix_and_sibling() {
+        assert_eq!(
+            isolated_group("src/features/billing/api.ts", "src/features/*"),
+            Some(("src/features/*".to_string(), "billing".to_string()))
+        );
+        assert_eq!(
+            isolated_group("src/shared/utils.ts", "src/features/*"),
+            None
+        );
+    }
+
+    #[test]
+    fn isolated_features_flag_cross_feature_and_allow_intra_feature() {
+        let symbols = Vec::new();
+        let edges = vec![
+            DependencyEdge {
+                from_symbol: "src/features/billing/a.ts".to_string(),
+                to_symbol: "src/features/auth/b.ts".to_string(),
+                kind: DependencyEdgeKind::Imports,
+                count: 1,
+            },
+            DependencyEdge {
+                from_symbol: "src/features/billing/a.ts".to_string(),
+                to_symbol: "src/features/billing/b.ts".to_string(),
+                kind: DependencyEdgeKind::Imports,
+                count: 1,
+            },
+        ];
+        let config = ArchitectureConfig {
+            isolated: vec!["src/features/*".into()],
+            ..Default::default()
+        };
+        let graph = SymbolGraph::from_parsed(&symbols, &edges);
+        let ctx = make_ctx(&symbols, &edges, &graph, &config);
+
+        let findings = ArchitectureViolationRule.detect(&ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].kind, SlopKind::LayerViolation);
+        assert_eq!(findings[0].severity, Severity::High);
+        assert_eq!(findings[0].confidence, 0.95);
+        assert!(findings[0].title.contains("Isolated Feature Violation"));
+        assert_eq!(findings[0].symbol_id, "src/features/billing/a.ts");
     }
 }

@@ -90,6 +90,7 @@ impl SlopDetectorEngine {
             Box::new(GodObjectRule),
             Box::new(ArchitectureViolationRule),
             Box::new(SecurityRule),
+            Box::new(UnusedDependencyRule),
         ]
     }
 
@@ -153,13 +154,13 @@ mod tests {
     }
 
     #[test]
-    fn default_rules_covers_all_eight_detectors() {
+    fn default_rules_covers_all_detectors() {
         let rules = SlopDetectorEngine::default_rules();
-        assert_eq!(rules.len(), 8);
+        assert_eq!(rules.len(), 9);
         let mut names: Vec<&str> = rules.iter().map(|r| r.rule_name()).collect();
         names.sort();
         names.dedup();
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 9);
     }
 
     #[test]

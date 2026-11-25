@@ -107,3 +107,59 @@ fn mcp_lists_check_and_scan_and_gates_sloppy_app() {
     );
     assert!(report["summary"].is_string());
 }
+
+#[test]
+fn mcp_emits_parse_error_for_malformed_json_and_recovers() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deslop"))
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("deslop mcp spawns");
+
+    {
+        let stdin = child.stdin.as_mut().expect("stdin piped");
+        writeln!(stdin, "{{not valid json").unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::to_string(&json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list"
+            }))
+            .unwrap()
+        )
+        .unwrap();
+    }
+
+    let output = child.wait_with_output().expect("wait for deslop mcp");
+    assert!(
+        output.status.success(),
+        "deslop mcp crashed on malformed input: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let responses: Vec<Value> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("valid JSON-RPC response line"))
+        .collect();
+    assert_eq!(
+        responses.len(),
+        2,
+        "expected parse error + tools/list response, got {stdout}"
+    );
+
+    // 1. JSON-RPC parse error (-32700) for the malformed line
+    assert_eq!(responses[0]["error"]["code"], -32700);
+
+    // 2. Valid tools/list response afterwards
+    assert_eq!(responses[1]["id"], 2);
+    let tools = responses[1]["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    assert!(!tools.is_empty(), "expected non-empty tools list");
+}
