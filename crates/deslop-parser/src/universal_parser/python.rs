@@ -39,16 +39,28 @@ pub(super) fn extract_python_nodes(
                             symbols,
                             edges,
                         ),
-                        "class_definition" => extract_python_class(
-                            path,
-                            file_str,
-                            source,
-                            def_node,
-                            attributes,
-                            symbols,
-                            edges,
-                            imports,
-                        ),
+                        "class_definition" => {
+                            if let Some((class_name, body_node)) = extract_python_class(
+                                path,
+                                file_str,
+                                source,
+                                def_node,
+                                attributes,
+                                symbols,
+                                edges,
+                            ) {
+                                extract_python_nodes(
+                                    path,
+                                    file_str,
+                                    source,
+                                    body_node,
+                                    Some(&class_name),
+                                    symbols,
+                                    edges,
+                                    imports,
+                                );
+                            }
+                        }
                         _ => extract_python_nodes(
                             path,
                             file_str,
@@ -75,7 +87,7 @@ pub(super) fn extract_python_nodes(
                 );
             }
             "class_definition" => {
-                extract_python_class(
+                if let Some((class_name, body_node)) = extract_python_class(
                     path,
                     file_str,
                     source,
@@ -83,8 +95,18 @@ pub(super) fn extract_python_nodes(
                     Vec::new(),
                     symbols,
                     edges,
-                    imports,
-                );
+                ) {
+                    extract_python_nodes(
+                        path,
+                        file_str,
+                        source,
+                        body_node,
+                        Some(&class_name),
+                        symbols,
+                        edges,
+                        imports,
+                    );
+                }
             }
             "import_statement" => {
                 extract_import_statement(file_str, source, child, edges, imports);
@@ -207,19 +229,16 @@ fn extract_python_function(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn extract_python_class(
+fn extract_python_class<'tree>(
     path: &Path,
     file_str: &str,
     source: &str,
-    class_node: Node,
+    class_node: Node<'tree>,
     attributes: Vec<String>,
     symbols: &mut Vec<Symbol>,
     edges: &mut Vec<DependencyEdge>,
-    imports: &mut Vec<Import>,
-) {
-    let Some(name_node) = class_node.child_by_field_name("name") else {
-        return;
-    };
+) -> Option<(String, Node<'tree>)> {
+    let name_node = class_node.child_by_field_name("name")?;
     let class_name = super::node_text(name_node, source).to_string();
     let symbol_id = format!("{}::{}", file_str, class_name);
     let start_point = class_node.start_position();
@@ -268,19 +287,10 @@ fn extract_python_class(
         is_trait_impl: false,
     });
 
-    // Visit methods inside class body
-    if let Some(body_node) = class_node.child_by_field_name("body") {
-        extract_python_nodes(
-            path,
-            file_str,
-            source,
-            body_node,
-            Some(&class_name),
-            symbols,
-            edges,
-            imports,
-        );
-    }
+    // Return class body so caller recurses without creating mutual recursion.
+    class_node
+        .child_by_field_name("body")
+        .map(|body_node| (class_name, body_node))
 }
 
 fn extract_import_statement(
