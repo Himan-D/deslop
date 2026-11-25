@@ -132,6 +132,10 @@ pub(super) fn count_complexity(node: Node, triggers: &[&str]) -> usize {
     count
 }
 
+fn is_valid_ident(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 pub(super) fn extract_calls_in_node(
     from_symbol: &str,
     node: Node,
@@ -144,20 +148,27 @@ pub(super) fn extract_calls_in_node(
         if child.kind() == call_kind {
             if let Some(fn_node) = child.child(0) {
                 let callee = node_text(fn_node, source).trim();
-                // Extract base identifier if it's an attribute call like obj.method()
-                let clean_callee = if let Some(last_dot) = callee.rfind('.') {
-                    &callee[last_dot + 1..]
+                let to_symbol = if let Some((recv, rest)) = callee.split_once('.') {
+                    if !rest.contains('.') && is_valid_ident(recv) && is_valid_ident(rest) {
+                        if recv == "this" || recv == "self" {
+                            Some(format!("Self::{rest}"))
+                        } else {
+                            Some(format!("{recv}::{rest}"))
+                        }
+                    } else if let Some((_, last)) = callee.rsplit_once('.') {
+                        is_valid_ident(last).then(|| last.to_string())
+                    } else {
+                        None
+                    }
+                } else if is_valid_ident(callee) {
+                    Some(callee.to_string())
                 } else {
-                    callee
+                    None
                 };
-                if !clean_callee.is_empty()
-                    && clean_callee
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '_')
-                {
+                if let Some(to_symbol) = to_symbol {
                     edges.push(DependencyEdge {
                         from_symbol: from_symbol.to_string(),
-                        to_symbol: clean_callee.to_string(),
+                        to_symbol,
                         kind: DependencyEdgeKind::Calls,
                         count: 1,
                     });

@@ -199,4 +199,60 @@ func (s *Store) Get(id string) string { return fmt.Sprint(id) }
             parsed.imports
         );
     }
+
+    assert!(
+        parsed.edges.iter().any(|e| {
+            e.kind == DependencyEdgeKind::Calls
+                && e.from_symbol.ends_with("Store::Get")
+                && e.to_symbol == "fmt::Sprint"
+        }),
+        "expected Calls edge from Store::Get to fmt::Sprint, got: {:?}",
+        parsed.edges
+    );
+}
+
+#[test]
+fn typescript_this_method_call_emits_self_qualifier() {
+    let parser = UniversalParser::new(Language::TypeScript);
+    let src = r#"
+class Service {
+    run() {
+        this.helper();
+    }
+    helper() {}
+}
+"#;
+    let parsed = parser.parse(Path::new("service.ts"), src);
+    assert!(
+        parsed.edges.iter().any(|e| {
+            e.kind == DependencyEdgeKind::Calls
+                && e.from_symbol.ends_with("Service::run")
+                && e.to_symbol == "Self::helper"
+        }),
+        "expected Calls edge from Service::run to Self::helper, got: {:?}",
+        parsed.edges
+    );
+}
+
+#[test]
+fn python_self_method_call_emits_self_qualifier() {
+    let parser = UniversalParser::new(Language::Python);
+    let src = r#"
+class Service:
+    def run(self):
+        self.helper()
+
+    def helper(self):
+        pass
+"#;
+    let parsed = parser.parse(Path::new("service.py"), src);
+    assert!(
+        parsed.edges.iter().any(|e| {
+            e.kind == DependencyEdgeKind::Calls
+                && e.from_symbol.ends_with("Service::run")
+                && e.to_symbol == "Self::helper"
+        }),
+        "expected Calls edge from Service::run to Self::helper, got: {:?}",
+        parsed.edges
+    );
 }

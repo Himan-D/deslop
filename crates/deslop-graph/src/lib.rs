@@ -5,21 +5,28 @@ pub mod profiler;
 pub mod scip;
 pub mod trace;
 
+mod resolver;
+mod tsconfig;
+
 pub use capacity::{
     BreakdownRisk, CapacityAnalyzer, CapacityEstimate, CapacityReport, DeviceProfile,
 };
 pub use churn::{ChurnAnalysisReport, GitChurnAnalyzer, GitHotspot, TemporalCoupling};
 pub use deep_analyzer::DeepAnalyzer;
 pub use profiler::{CallStackPath, StackProfileReport, StackProfiler};
+pub use resolver::EdgeResolution;
 pub use scip::{ScipGenerator, ScipIndex};
 pub use trace::{DynamicRescue, OtelSpan, TraceCorrelationReport, TraceIngestionEngine};
+pub use tsconfig::{expand_tsconfig_import, load_tsconfig_aliases};
 
 use deslop_core::{DependencyEdge, DependencyEdgeKind, Import, Symbol, Visibility};
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::Bfs;
 use petgraph::Direction;
+use resolver::{normalize_callee, resolve_callee, short_name};
 use std::collections::{HashMap, HashSet};
+use tsconfig::find_tsconfig_aliases;
 
 /// Abstraction over whole-graph analyzers. New analyses implement this trait
 /// instead of growing ad-hoc inherent methods, so callers and tests can be
@@ -27,17 +34,6 @@ use std::collections::{HashMap, HashSet};
 pub trait GraphAnalyzer {
     type Report;
     fn analyze(graph: &SymbolGraph) -> Self::Report;
-}
-
-/// How an edge between two symbol nodes was resolved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EdgeResolution {
-    /// Direct symbol ID hit, `Self::` same-file hit, or qualified `match_qualified` hit.
-    Exact,
-    /// Resolved via `normalize_callee` import alias, `file_imports`, or `tsconfig` path alias.
-    ImportScoped,
-    /// Resolved via unqualified bare-name global (`cands.len() == 1`) or same-file unqualified fallback.
-    BareHeuristic,
 }
 
 pub struct SymbolGraph {
@@ -72,7 +68,11 @@ impl SymbolGraph {
         edges: &[DependencyEdge],
         imports: &HashMap<std::path::PathBuf, Vec<Import>>,
     ) -> Self {
-        let mut sg = Self::new();
+        let mut sg = Self {
+            graph: DiGraph::with_capacity(symbols.len(), edges.len()),
+            node_indices: HashMap::with_capacity(symbols.len()),
+            edge_resolutions: HashMap::with_capacity(edges.len()),
+        };
 
         // Indexes for scoped callee resolution:
         // - file_scoped: (file, short name) -> candidates (caller's own file wins)
@@ -327,413 +327,6 @@ impl Default for SymbolGraph {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Short name: last segment after `::` or `.` (`Self::foo` -> `foo`,
-/// `obj.method` -> `method`).
-fn short_name(qualified: &str) -> &str {
-    qualified
-        .rsplit([':', '.'])
-        .find(|s| !s.is_empty())
-        .unwrap_or(qualified)
-}
-
-/// Reads `tsconfig.json` in `root` if present and extracts `compilerOptions.paths`
-/// prefix mappings (combined with `compilerOptions.baseUrl`), e.g.
-/// `"@/*": ["src/*"]` -> `"@" -> "src"`.
-pub fn load_tsconfig_aliases(root: &std::path::Path) -> HashMap<String, String> {
-    let mut aliases = HashMap::new();
-    let tsconfig_path = root.join("tsconfig.json");
-    let Ok(content) = std::fs::read_to_string(&tsconfig_path) else {
-        return aliases;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return aliases;
-    };
-    let Some(compiler_opts) = json.get("compilerOptions") else {
-        return aliases;
-    };
-
-    let base_url = compiler_opts
-        .get("baseUrl")
-        .and_then(|v| v.as_str())
-        .map(|s| {
-            let trimmed = s.trim().trim_start_matches("./").trim_end_matches('/');
-            if trimmed == "." {
-                ""
-            } else {
-                trimmed
-            }
-        })
-        .unwrap_or("");
-
-    if let Some(paths) = compiler_opts.get("paths").and_then(|v| v.as_object()) {
-        for (pattern, targets_val) in paths {
-            let Some(target) = targets_val
-                .as_array()
-                .and_then(|arr| arr.first())
-                .and_then(|v| v.as_str())
-            else {
-                continue;
-            };
-            let alias_key = pattern
-                .trim_end_matches("/*")
-                .trim_end_matches('*')
-                .trim_end_matches('/');
-            if alias_key.is_empty() {
-                continue;
-            }
-            let raw_target = target
-                .trim()
-                .trim_start_matches("./")
-                .trim_end_matches("/*")
-                .trim_end_matches('*')
-                .trim_end_matches('/');
-            let full_target = if base_url.is_empty() || base_url == "." {
-                raw_target.to_string()
-            } else if raw_target.is_empty() || raw_target == "." {
-                base_url.to_string()
-            } else {
-                format!("{}/{}", base_url, raw_target)
-            };
-            if !full_target.is_empty() {
-                aliases.insert(alias_key.to_string(), full_target);
-            }
-        }
-    }
-
-    aliases
-}
-
-/// Expands a `tsconfig` path alias prefix in `import_path` using `aliases`,
-/// returning `import_path` unchanged if no alias matches.
-pub fn expand_tsconfig_import(import_path: &str, aliases: &HashMap<String, String>) -> String {
-    if aliases.is_empty() {
-        return import_path.to_string();
-    }
-    let mut keys: Vec<&String> = aliases.keys().collect();
-    keys.sort_by(|a, b| b.len().cmp(&a.len()));
-    for key in keys {
-        if import_path == key.as_str() {
-            return aliases[key].clone();
-        }
-        if let Some(rest) = import_path.strip_prefix(key.as_str()) {
-            if let Some(after_slash) = rest.strip_prefix('/') {
-                return format!("{}/{}", aliases[key], after_slash);
-            }
-        }
-    }
-    import_path.to_string()
-}
-
-fn find_tsconfig_aliases(
-    symbols: &[Symbol],
-    imports: &HashMap<std::path::PathBuf, Vec<Import>>,
-) -> HashMap<String, String> {
-    let paths: Vec<&std::path::Path> = if !imports.is_empty() {
-        imports.keys().map(|p| p.as_path()).collect()
-    } else {
-        symbols.iter().map(|s| s.file_path.as_path()).collect()
-    };
-    let Some(mut common) = common_dir_prefix(&paths) else {
-        return HashMap::new();
-    };
-    loop {
-        if common.join("tsconfig.json").is_file() {
-            return load_tsconfig_aliases(&common);
-        }
-        if !common.pop() {
-            break;
-        }
-    }
-    HashMap::new()
-}
-
-fn common_dir_prefix(paths: &[&std::path::Path]) -> Option<std::path::PathBuf> {
-    let first = paths.first()?;
-    let mut prefix: Vec<_> = first.parent().unwrap_or(first).components().collect();
-    for path in &paths[1..] {
-        let comps: Vec<_> = path.parent().unwrap_or(path).components().collect();
-        let common_len = prefix
-            .iter()
-            .zip(comps.iter())
-            .take_while(|(a, b)| a == b)
-            .count();
-        prefix.truncate(common_len);
-    }
-    if prefix.is_empty() {
-        Some(std::path::PathBuf::new())
-    } else {
-        Some(prefix.into_iter().collect())
-    }
-}
-
-/// Rewrites a callee through the caller's `use` imports: strips
-/// module-relative heads (`crate::`, `self::`, `super::`) and expands the
-/// head segment through renames (`PStore::charge` with
-/// `use payments::Store as PStore` becomes `payments::Store::charge`).
-/// Single-level only; alias chains are not followed.
-fn normalize_callee(callee: &str, imports: &[Import]) -> (String, bool) {
-    let mut norm = callee.replace('.', "::");
-    loop {
-        if let Some(rest) = norm
-            .strip_prefix("crate::")
-            .or_else(|| norm.strip_prefix("self::"))
-            .or_else(|| norm.strip_prefix("super::"))
-        {
-            norm = rest.to_string();
-            continue;
-        }
-        break;
-    }
-    if let Some((head, tail)) = norm.split_once("::") {
-        if let Some(imp) = imports.iter().find(|i| !i.is_glob && i.local == head) {
-            let rewritten = format!("{}::{}", imp.path, tail);
-            let (final_norm, _) = normalize_callee(&rewritten, &[]);
-            return (final_norm, true);
-        }
-    } else if let Some(imp) = imports
-        .iter()
-        .find(|i| !i.is_glob && i.local == norm && i.path.contains("::"))
-    {
-        return (imp.path.clone(), true);
-    }
-    (norm, false)
-}
-
-/// Resolves a callee reference to a graph node without guessing:
-/// 1. `Self::` references resolve same-file only (they are always same-impl).
-/// 2. Same-file short-name match (a call most likely targets its own file).
-/// 3. Qualified `Type::member` match by suffix, else a link to the enclosing
-///    type itself (an associated call still uses the type).
-/// 4. Bare-name global match only when exactly one candidate exists, or when
-///    a glob import disambiguates to exactly one file.
-///
-/// Anything ambiguous resolves to `None` rather than a wrong node.
-fn resolve_callee(
-    callee: &str,
-    caller_file: Option<&std::path::Path>,
-    file_scoped: &HashMap<(&std::path::Path, &str), Vec<NodeIndex>>,
-    global: &HashMap<&str, Vec<NodeIndex>>,
-    graph: &DiGraph<Symbol, DependencyEdgeKind>,
-    file_imports: &[Import],
-) -> Option<(NodeIndex, EdgeResolution)> {
-    let short = short_name(callee);
-    let is_self = callee == "Self" || callee.starts_with("Self::");
-
-    if let Some(file) = caller_file {
-        if let Some(cands) = file_scoped.get(&(file, short)) {
-            if is_self {
-                if cands.len() == 1 {
-                    return Some((cands[0], EdgeResolution::Exact));
-                }
-                if let Some(hit) = match_qualified(callee, cands, graph) {
-                    return Some((hit, EdgeResolution::Exact));
-                }
-                return None;
-            }
-            if callee.contains("::") {
-                if let Some(hit) = match_qualified(callee, cands, graph) {
-                    return Some((hit, EdgeResolution::Exact));
-                }
-                // Qualified call did not match a symbol in this file; fall through
-                // to global qualified / import-scoped resolution.
-            } else {
-                // Same-file unqualified call: pick the unique or first local match
-                // rather than leaking across files.
-                return cands
-                    .first()
-                    .copied()
-                    .map(|idx| (idx, EdgeResolution::BareHeuristic));
-            }
-        }
-        if is_self {
-            return None;
-        }
-    } else if is_self {
-        return None;
-    }
-
-    let cands = global.get(short);
-    if callee.contains("::") {
-        // Qualified: exact qualifier match, file-hint disambiguation, or
-        // enclosing-type fallback only. Never an unrelated same-named symbol.
-        if let Some(cands) = cands {
-            if let Some(hit) = match_qualified(callee, cands, graph) {
-                return Some((hit, EdgeResolution::Exact));
-            }
-            if cands.len() == 1 && (callee.starts_with('.') || callee.contains('/')) {
-                return Some((cands[0], EdgeResolution::ImportScoped));
-            }
-            if cands.len() > 1 {
-                if let Some(head) = callee.split("::").next() {
-                    let hint = module_hint(head);
-                    if !hint.is_empty() {
-                        if let Some(hit) = disambiguate_by_file(cands, graph, hint) {
-                            return Some((hit, EdgeResolution::ImportScoped));
-                        }
-                    }
-                }
-            }
-        }
-        return resolve_enclosing_type(callee, caller_file, file_scoped, global, graph)
-            .map(|idx| (idx, EdgeResolution::Exact));
-    }
-
-    if let Some(cands) = cands {
-        if cands.len() == 1 {
-            return Some((cands[0], EdgeResolution::BareHeuristic));
-        }
-        for imp in file_imports
-            .iter()
-            .filter(|i| i.is_glob || i.local == callee)
-        {
-            let hint = module_hint(&imp.path);
-            if !hint.is_empty() {
-                if let Some(hit) = disambiguate_by_file(cands, graph, hint) {
-                    return Some((hit, EdgeResolution::ImportScoped));
-                }
-            }
-        }
-        if let Some(hit) = match_qualified(callee, cands, graph) {
-            return Some((hit, EdgeResolution::Exact));
-        }
-    }
-    None
-}
-
-/// Extracts the last meaningful module/file segment from an import path across
-/// `::`, `/`, and `.`, ignoring leading `./` or `../` and trailing source
-/// extensions (`.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.go`).
-fn module_hint(path: &str) -> &str {
-    let mut p = path.trim();
-    loop {
-        if let Some(rest) = p.strip_prefix("./").or_else(|| p.strip_prefix("../")) {
-            p = rest;
-        } else {
-            break;
-        }
-    }
-    for ext in [".tsx", ".ts", ".jsx", ".js", ".py", ".go"] {
-        if let Some(stem) = p.strip_suffix(ext) {
-            p = stem;
-            break;
-        }
-    }
-    p.rsplit([':', '/', '.'])
-        .find(|s| !s.is_empty())
-        .unwrap_or("")
-}
-
-/// Narrows same-named candidates to the one living in the hinted file or
-/// directory (file stem or parent dir name). Returns `None` unless exactly
-/// one candidate matches: unique evidence or nothing.
-fn disambiguate_by_file(
-    candidates: &[NodeIndex],
-    graph: &DiGraph<Symbol, DependencyEdgeKind>,
-    hint: &str,
-) -> Option<NodeIndex> {
-    let matches: Vec<NodeIndex> = candidates
-        .iter()
-        .copied()
-        .filter(|idx| {
-            let path = &graph[*idx].file_path;
-            path.file_stem().is_some_and(|s| s == hint)
-                || path
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .is_some_and(|n| n == hint)
-        })
-        .collect();
-    if matches.len() == 1 {
-        matches.into_iter().next()
-    } else {
-        None
-    }
-}
-
-/// Links `Type::assoc_item` to the `Type` symbol itself when the member has no
-/// parsed definition (e.g. derive-generated `Cli::parse`). Only fires when the
-/// qualifier names a real parsed type.
-fn resolve_enclosing_type(
-    callee: &str,
-    caller_file: Option<&std::path::Path>,
-    file_scoped: &HashMap<(&std::path::Path, &str), Vec<NodeIndex>>,
-    global: &HashMap<&str, Vec<NodeIndex>>,
-    graph: &DiGraph<Symbol, DependencyEdgeKind>,
-) -> Option<NodeIndex> {
-    let qualifier = callee.rsplit_once("::").map(|(q, _)| q)?;
-    if qualifier.is_empty()
-        || matches!(
-            qualifier,
-            "Self" | "self" | "crate" | "super" | "Self::Self"
-        )
-        || qualifier.contains("Self::")
-    {
-        return None;
-    }
-    let type_short = short_name(qualifier);
-
-    let mut matches: Vec<NodeIndex> = Vec::new();
-    if let Some(file) = caller_file {
-        if let Some(cands) = file_scoped.get(&(file, type_short)) {
-            matches.extend(
-                cands
-                    .iter()
-                    .filter(|idx| type_name_matches(&graph[**idx].name, qualifier))
-                    .copied(),
-            );
-        }
-    }
-    if matches.is_empty() {
-        if let Some(cands) = global.get(type_short) {
-            matches.extend(
-                cands
-                    .iter()
-                    .filter(|idx| type_name_matches(&graph[**idx].name, qualifier))
-                    .copied(),
-            );
-        }
-    }
-    if matches.len() == 1 {
-        matches.into_iter().next()
-    } else {
-        None
-    }
-}
-
-fn type_name_matches(symbol_name: &str, qualifier: &str) -> bool {
-    symbol_name == qualifier
-        || qualifier.ends_with(&format!("::{}", symbol_name))
-        || symbol_name.ends_with(&format!("::{}", qualifier))
-}
-
-/// Among candidates sharing a short name, find the one whose qualified symbol
-/// name matches the callee reference: exact match, symbol-name-is-suffix
-/// (`mcp::McpServer::start` matches `McpServer::start`), or `Self::` treated
-/// as a wildcard receiver. Multiple hits mean ambiguity: `None`.
-fn match_qualified(
-    callee: &str,
-    candidates: &[NodeIndex],
-    graph: &DiGraph<Symbol, DependencyEdgeKind>,
-) -> Option<NodeIndex> {
-    let callee_norm = callee.replace('.', "::");
-    let short = short_name(&callee_norm).to_string();
-    let mut hits = candidates.iter().filter(|idx| {
-        let name = &graph[**idx].name;
-        name == &callee_norm
-            || name.ends_with(&format!("::{}", callee_norm))
-            // Module-prefixed callee matching a qualified symbol tail
-            // (`mcp::McpServer::start` vs `McpServer::start`). Single-segment
-            // names are excluded: `Cli::parse` must never link a free `parse`.
-            || (name.contains("::") && callee_norm.ends_with(&format!("::{}", name)))
-            || (callee_norm.starts_with("Self::") && name.ends_with(&format!("::{}", short)))
-    });
-    let first = hits.next()?;
-    if hits.next().is_some() {
-        return None;
-    }
-    Some(*first)
 }
 
 #[cfg(test)]
@@ -1250,87 +843,5 @@ mod tests {
         let exact_cycles = exact_sg.find_circular_dependencies_with_confidence();
         assert_eq!(exact_cycles.len(), 1);
         assert!(!exact_cycles[0].1);
-    }
-
-    #[test]
-    fn tsconfig_alias_expands_and_disambiguates_import() {
-        let unique_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("deslop_tsconfig_test_{}", unique_id));
-        let src_dir = root.join("src");
-        let lib_dir = src_dir.join("lib");
-        let other_dir = root.join("other");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::create_dir_all(&other_dir).unwrap();
-
-        std::fs::write(
-            root.join("tsconfig.json"),
-            r#"{
-  "compilerOptions": {
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"],
-      "@auth": ["src/lib/auth"]
-    }
-  }
-}"#,
-        )
-        .unwrap();
-
-        let aliases = load_tsconfig_aliases(&root);
-        assert_eq!(aliases.get("@").map(String::as_str), Some("src"));
-        assert_eq!(
-            expand_tsconfig_import("@/lib/auth", &aliases),
-            "src/lib/auth"
-        );
-        assert_eq!(expand_tsconfig_import("@auth", &aliases), "src/lib/auth");
-        assert_eq!(expand_tsconfig_import("lodash", &aliases), "lodash");
-
-        let app_file = src_dir.join("app.ts");
-        let auth_file = lib_dir.join("auth.ts");
-        let other_file = other_dir.join("legacy.ts");
-
-        let app_str = app_file.to_string_lossy().to_string();
-        let auth_str = auth_file.to_string_lossy().to_string();
-        let other_str = other_file.to_string_lossy().to_string();
-
-        let symbols = vec![
-            sym(&format!("{}::main", app_str), "main", &app_str, Visibility::Public),
-            sym(
-                &format!("{}::authenticate", auth_str),
-                "authenticate",
-                &auth_str,
-                Visibility::Public,
-            ),
-            sym(
-                &format!("{}::authenticate", other_str),
-                "authenticate",
-                &other_str,
-                Visibility::Public,
-            ),
-        ];
-        let edges = vec![edge(&format!("{}::main", app_str), "authenticate")];
-        let mut imports = HashMap::new();
-        imports.insert(
-            app_file,
-            vec![Import {
-                local: "authenticate".to_string(),
-                path: "@auth".to_string(),
-                is_glob: false,
-            }],
-        );
-
-        let sg = SymbolGraph::from_parsed_with_imports(&symbols, &edges, &imports);
-        let main_id = format!("{}::main", app_str);
-        let auth_id = format!("{}::authenticate", auth_str);
-        assert_eq!(outgoing_names(&sg, &main_id), vec![auth_id.clone()]);
-        assert_eq!(
-            sg.edge_resolution(sg.node_indices[&main_id], sg.node_indices[&auth_id]),
-            Some(EdgeResolution::ImportScoped)
-        );
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -202,6 +202,7 @@ impl InversionEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn generate_markdown(
         codebase_name: &str,
         stats: &CodebaseStats,

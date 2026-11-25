@@ -4,6 +4,7 @@ use deslop_core::{
 use std::path::Path;
 use tree_sitter::Node;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn extract_python_nodes(
     path: &Path,
     file_str: &str,
@@ -389,20 +390,18 @@ fn extract_import_from_statement(
             continue;
         }
         match child.kind() {
-            "wildcard_import" => {
-                if !module_path.is_empty() {
-                    edges.push(DependencyEdge {
-                        from_symbol: file_str.to_string(),
-                        to_symbol: module_path.clone(),
-                        kind: DependencyEdgeKind::Imports,
-                        count: 1,
-                    });
-                    imports.push(Import {
-                        local: "*".to_string(),
-                        path: module_path.replace('.', "::"),
-                        is_glob: true,
-                    });
-                }
+            "wildcard_import" if !module_path.is_empty() => {
+                edges.push(DependencyEdge {
+                    from_symbol: file_str.to_string(),
+                    to_symbol: module_path.clone(),
+                    kind: DependencyEdgeKind::Imports,
+                    count: 1,
+                });
+                imports.push(Import {
+                    local: "*".to_string(),
+                    path: module_path.replace('.', "::"),
+                    is_glob: true,
+                });
             }
             "aliased_import" => {
                 let item_name = child

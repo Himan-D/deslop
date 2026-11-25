@@ -87,8 +87,7 @@ pub(super) fn extract_go_nodes(
                         .map(|r| {
                             super::node_text(r, source)
                                 .split(|c: char| !c.is_alphanumeric() && c != '_')
-                                .filter(|s| !s.is_empty())
-                                .last()
+                                .rfind(|s| !s.is_empty())
                                 .unwrap_or("Unknown")
                                 .to_string()
                         })

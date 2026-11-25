@@ -5,6 +5,7 @@ use deslop_core::{
 use std::path::Path;
 use tree_sitter::Node;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn extract_ts_js_nodes(
     path: &Path,
     file_str: &str,
@@ -505,6 +506,7 @@ fn collect_import_clause(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn register_ts_fn(
     path: &Path,
     file_str: &str,
