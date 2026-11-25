@@ -227,14 +227,65 @@ pub enum SlopKind {
     GodObject,
     /// Architectural layer or forbidden boundary rule violation (ArchUnit-style)
     LayerViolation,
+    /// Hardcoded API key, private key, or high-entropy secret literal
+    HardcodedSecret,
+    /// Potential SQL, shell, or code-evaluation injection sink
+    InjectionSink,
+    /// Unsafe deserialization (`pickle.loads`, `yaml.load` without SafeLoader)
+    UnsafeDeserialization,
+    /// Weak cryptography or insecure PRNG in security-sensitive contexts
+    WeakCrypto,
+    /// Rust `unsafe` block without `// SAFETY:` or insecure transport/DOM sink
+    UnsafeAudit,
+}
+
+impl SlopKind {
+    pub fn is_security(&self) -> bool {
+        matches!(
+            self,
+            Self::HardcodedSecret
+                | Self::InjectionSink
+                | Self::UnsafeDeserialization
+                | Self::WeakCrypto
+                | Self::UnsafeAudit
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub ignore_rules: Vec<String>,
+    #[serde(default)]
+    pub ignore_paths: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ignore_rules: Vec::new(),
+            ignore_paths: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ArchitectureConfig {
+    #[serde(default)]
     pub layers: Vec<String>,
+    #[serde(default)]
     pub forbidden_rules: Vec<ForbiddenRule>,
     #[serde(default)]
     pub allow_exceptions: Vec<AllowException>,
+    #[serde(default)]
+    pub security: SecurityConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

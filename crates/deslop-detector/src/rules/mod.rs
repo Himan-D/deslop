@@ -4,6 +4,7 @@ pub mod cycle;
 pub mod dead;
 pub mod ghost;
 pub mod god;
+pub mod security;
 pub mod tollbooth;
 
 pub use architecture::{matches_pattern, ArchitectureViolationRule};
@@ -12,4 +13,5 @@ pub use cycle::CircularDependencyRule;
 pub use dead::DeadOrphanRule;
 pub use ghost::GhostAbstractionRule;
 pub use god::GodObjectRule;
+pub use security::SecurityRule;
 pub use tollbooth::TollboothWrapperRule;
