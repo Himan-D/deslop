@@ -1,6 +1,19 @@
-# Deslop: Codebase Inversion & Architectural De-Slopping Engine
+<div align="center">
 
-> A high-performance, deterministic codebase inversion and de-slopping platform written in **Rust**. Inverts bloated, tangled spaghetti and AI-generated slop into clean, verified architectural specifications, resolving circular dependency loops with principal-level engineering strategies.
+<img src="assets/logo.png" width="96" alt="Deslop logo" />
+
+# Deslop
+
+**Deterministic CI & MCP architectural and security gate for AI-era codebases.**
+
+[![Release](https://img.shields.io/github/v/release/Himan-D/deslop?color=f97316)](https://github.com/Himan-D/deslop/releases)
+[![CI](https://github.com/Himan-D/deslop/actions/workflows/deslop.yml/badge.svg?branch=main)](https://github.com/Himan-D/deslop/actions/workflows/deslop.yml)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](Cargo.toml)
+[![Wiki](https://img.shields.io/badge/docs-wiki-0f172a.svg)](https://github.com/Himan-D/deslop/wiki)
+
+</div>
+
+> Built in **Rust** (`syn` + `tree-sitter`). Catches dependency cycles, architectural layer violations, shallow wrappers, dead code, hardcoded secrets, and injection sinks—locally in milliseconds or in GitHub Actions with SARIF 2.1.0.
 
 ---
 
