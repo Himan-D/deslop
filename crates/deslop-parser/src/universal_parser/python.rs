@@ -42,13 +42,7 @@ pub(super) fn extract_python_nodes(
                         ),
                         "class_definition" => {
                             if let Some((class_name, body_node)) = extract_python_class(
-                                path,
-                                file_str,
-                                source,
-                                def_node,
-                                attributes,
-                                symbols,
-                                edges,
+                                path, file_str, source, def_node, attributes, symbols, edges,
                             ) {
                                 extract_python_nodes(
                                     path,
@@ -88,15 +82,9 @@ pub(super) fn extract_python_nodes(
                 );
             }
             "class_definition" => {
-                if let Some((class_name, body_node)) = extract_python_class(
-                    path,
-                    file_str,
-                    source,
-                    child,
-                    Vec::new(),
-                    symbols,
-                    edges,
-                ) {
+                if let Some((class_name, body_node)) =
+                    extract_python_class(path, file_str, source, child, Vec::new(), symbols, edges)
+                {
                     extract_python_nodes(
                         path,
                         file_str,
@@ -414,11 +402,7 @@ fn extract_import_from_statement(
                     .unwrap_or_default();
                 if !item_name.is_empty() {
                     let full_path = join_path(&item_name);
-                    let local = if alias.is_empty() {
-                        item_name
-                    } else {
-                        alias
-                    };
+                    let local = if alias.is_empty() { item_name } else { alias };
                     edges.push(DependencyEdge {
                         from_symbol: file_str.to_string(),
                         to_symbol: full_path.clone(),
@@ -436,7 +420,11 @@ fn extract_import_from_statement(
                 let item_name = super::node_text(child, source).trim().to_string();
                 if !item_name.is_empty() {
                     let full_path = join_path(&item_name);
-                    let local = item_name.split('.').next().unwrap_or(&item_name).to_string();
+                    let local = item_name
+                        .split('.')
+                        .next()
+                        .unwrap_or(&item_name)
+                        .to_string();
                     edges.push(DependencyEdge {
                         from_symbol: file_str.to_string(),
                         to_symbol: full_path.clone(),

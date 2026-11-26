@@ -131,7 +131,12 @@ fn find_declaration_line(content: &str, dep_name: &str) -> usize {
         .unwrap_or(1)
 }
 
-fn make_finding(manifest_path: &Path, manifest_name: &str, dep_name: &str, line: usize) -> SlopFinding {
+fn make_finding(
+    manifest_path: &Path,
+    manifest_name: &str,
+    dep_name: &str,
+    line: usize,
+) -> SlopFinding {
     SlopFinding {
         kind: SlopKind::UnusedDependency,
         symbol_id: format!("{manifest_name}::{dep_name}"),
@@ -328,9 +333,13 @@ dead-crate = "0.2"
         assert_eq!(findings.len(), 2);
         assert!(unused_ids.contains(&"package.json::unused-js-pkg"));
         assert!(unused_ids.contains(&"Cargo.toml::dead-crate"));
-        assert!(findings.iter().all(|f| f.kind == SlopKind::UnusedDependency));
+        assert!(findings
+            .iter()
+            .all(|f| f.kind == SlopKind::UnusedDependency));
         assert!(findings.iter().all(|f| f.severity == Severity::Low));
-        assert!(findings.iter().all(|f| (f.confidence - 0.75).abs() < f64::EPSILON));
+        assert!(findings
+            .iter()
+            .all(|f| (f.confidence - 0.75).abs() < f64::EPSILON));
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -208,9 +208,11 @@ fn check_edge_violations(
     line: usize,
     findings: &mut Vec<SlopFinding>,
 ) -> bool {
-    if config.allow_exceptions.iter().any(|ex| {
-        matches_pattern(from_path, &ex.from) && matches_pattern(to_path, &ex.to)
-    }) {
+    if config
+        .allow_exceptions
+        .iter()
+        .any(|ex| matches_pattern(from_path, &ex.from) && matches_pattern(to_path, &ex.to))
+    {
         return false;
     }
 
@@ -234,7 +236,9 @@ fn check_edge_violations(
                 confidence: 1.0,
                 title: format!("Architectural Rule Violation: {} -> {}", rule.from, rule.to),
                 description: desc,
-                remediation: "Invert dependency or extract a common interface into a lower domain layer.".to_string(),
+                remediation:
+                    "Invert dependency or extract a common interface into a lower domain layer."
+                        .to_string(),
                 estimated_lines_saved: 0,
             });
         }
@@ -423,7 +427,12 @@ mod tests {
     #[test]
     fn raw_imports_edge_triggers_layer_inversion_and_deduplicates_with_symbol_edge() {
         let symbols = vec![
-            make_symbol("src/domain/order.ts::create", "create", "src/domain/order.ts", 12),
+            make_symbol(
+                "src/domain/order.ts::create",
+                "create",
+                "src/domain/order.ts",
+                12,
+            ),
             make_symbol("src/infra/db.ts::save", "save", "src/infra/db.ts", 5),
         ];
         let edges = vec![

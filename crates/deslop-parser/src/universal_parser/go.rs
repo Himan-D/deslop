@@ -75,7 +75,13 @@ pub(super) fn extract_go_nodes(
                         is_trait_impl: false,
                     });
 
-                    super::extract_calls_in_node(&symbol_id, child, source, "call_expression", edges);
+                    super::extract_calls_in_node(
+                        &symbol_id,
+                        child,
+                        source,
+                        "call_expression",
+                        edges,
+                    );
                 }
             }
             "method_declaration" => {
@@ -144,7 +150,13 @@ pub(super) fn extract_go_nodes(
                         is_trait_impl: false,
                     });
 
-                    super::extract_calls_in_node(&symbol_id, child, source, "call_expression", edges);
+                    super::extract_calls_in_node(
+                        &symbol_id,
+                        child,
+                        source,
+                        "call_expression",
+                        edges,
+                    );
                 }
             }
             "type_declaration" => {

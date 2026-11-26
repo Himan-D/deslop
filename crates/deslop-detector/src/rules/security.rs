@@ -1,5 +1,5 @@
 use crate::{DetectionContext, DetectionRule};
-use deslop_core::{AUX_PATH_ATTR, Severity, SlopFinding, SlopKind, Symbol};
+use deslop_core::{Severity, SlopFinding, SlopKind, Symbol, AUX_PATH_ATTR};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -80,10 +80,7 @@ impl DetectionRule for SecurityRule {
 
             let is_rust = ext == "rs";
             let is_python = ext == "py";
-            let is_js_family = matches!(
-                ext.as_str(),
-                "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs"
-            );
+            let is_js_family = matches!(ext.as_str(), "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs");
 
             let mut in_block_comment = false;
             let mut in_py_docstring: Option<&'static str> = None;
@@ -218,9 +215,7 @@ fn is_skipped_path(path: &Path) -> bool {
 
 fn is_comment_line(trimmed: &str) -> bool {
     trimmed.starts_with("//")
-        || (trimmed.starts_with('#')
-            && !trimmed.starts_with("#[")
-            && !trimmed.starts_with("#!["))
+        || (trimmed.starts_with('#') && !trimmed.starts_with("#[") && !trimmed.starts_with("#!["))
         || trimmed.starts_with("/*")
         || trimmed.starts_with('*')
 }
@@ -341,9 +336,7 @@ fn is_test_or_aux(sym: &Symbol) -> bool {
 fn symbol_id_for_line(path: &Path, syms: &[&Symbol], line_num: usize) -> String {
     syms.iter()
         .find(|s| {
-            !is_test_or_aux(s)
-                && line_num >= s.span.start_line
-                && line_num <= s.span.end_line
+            !is_test_or_aux(s) && line_num >= s.span.start_line && line_num <= s.span.end_line
         })
         .map(|s| s.id.clone())
         .unwrap_or_else(|| format!("{}::L{}", path.display(), line_num))
@@ -443,7 +436,12 @@ fn detect_hardcoded_secret(line: &str) -> Option<(Severity, &'static str)> {
     None
 }
 
-fn has_prefixed_token(line: &str, prefix: &str, min_tail_alnum: usize, disallow_dash_before: bool) -> bool {
+fn has_prefixed_token(
+    line: &str,
+    prefix: &str,
+    min_tail_alnum: usize,
+    disallow_dash_before: bool,
+) -> bool {
     let mut start = 0;
     while let Some(rel) = line[start..].find(prefix) {
         let idx = start + rel;
@@ -561,8 +559,8 @@ fn detect_tainted_assignment(line: &str) -> Option<String> {
         .any(|kw| upper_rhs.contains(kw));
     let lower_var = var.to_ascii_lowercase();
     let is_shell = [
-        "rm ", "sh ", "bash ", "zsh ", "curl ", "wget ", "ls ", "cat ", "echo ", "mkdir ",
-        "cp ", "mv ", "chmod ", "chown ", "kill ", "-c ", "&&", "| ",
+        "rm ", "sh ", "bash ", "zsh ", "curl ", "wget ", "ls ", "cat ", "echo ", "mkdir ", "cp ",
+        "mv ", "chmod ", "chown ", "kill ", "-c ", "&&", "| ",
     ]
     .iter()
     .any(|tok| rhs.contains(tok))
@@ -777,9 +775,7 @@ fn detect_unsafe_audit(
 
     if is_rust && has_rust_unsafe(line) {
         let start = idx.saturating_sub(2);
-        let has_safety = lines[start..=idx]
-            .iter()
-            .any(|l| l.contains("SAFETY:"));
+        let has_safety = lines[start..=idx].iter().any(|l| l.contains("SAFETY:"));
         if !has_safety {
             return Some((
                 Severity::Medium,
@@ -955,7 +951,11 @@ mod tests {
         let syms = vec![make_sym(file, "loadConfig")];
 
         let findings = run_security(&syms, None);
-        assert_eq!(findings.len(), 5, "expected 5 secret findings, got {findings:?}");
+        assert_eq!(
+            findings.len(),
+            5,
+            "expected 5 secret findings, got {findings:?}"
+        );
         assert!(findings.iter().all(|f| f.kind == SlopKind::HardcodedSecret));
         assert!(findings.iter().all(|f| f.description.contains('`')));
     }
@@ -982,7 +982,11 @@ mod tests {
         let syms = vec![make_sym(file, "run")];
 
         let findings = run_security(&syms, None);
-        assert_eq!(findings.len(), 6, "expected 6 injection findings, got {findings:?}");
+        assert_eq!(
+            findings.len(),
+            6,
+            "expected 6 injection findings, got {findings:?}"
+        );
         assert!(findings.iter().all(|f| f.kind == SlopKind::InjectionSink));
         assert!(findings.iter().all(|f| f.severity == Severity::High));
     }
@@ -1146,7 +1150,11 @@ mod tests {
 
         let syms = vec![make_sym(js_file, "js_fn"), make_sym(py_file, "f")];
         let findings = run_security(&syms, None);
-        assert_eq!(findings.len(), 1, "expected only real eval, got {findings:?}");
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected only real eval, got {findings:?}"
+        );
         assert_eq!(findings[0].line, 7);
         assert_eq!(findings[0].kind, SlopKind::InjectionSink);
     }
@@ -1181,7 +1189,11 @@ mod tests {
             make_sym(py_file, "cleanup"),
         ];
         let findings = run_security(&syms, None);
-        assert_eq!(findings.len(), 3, "expected 3 tainted sink findings, got {findings:?}");
+        assert_eq!(
+            findings.len(),
+            3,
+            "expected 3 tainted sink findings, got {findings:?}"
+        );
         assert!(findings.iter().all(|f| f.kind == SlopKind::InjectionSink));
         assert!(findings.iter().all(|f| f.severity == Severity::High));
         assert!(findings.iter().all(|f| (f.confidence - 0.85).abs() < 1e-6));
@@ -1190,10 +1202,7 @@ mod tests {
     #[test]
     fn detects_disabled_tls_verification_and_wildcard_cors_with_credentials() {
         let dir = TempDirGuard::new("tls_cors");
-        let py_file = dir.write_file(
-            "src/client.py",
-            "resp = requests.get(url, verify=False)\n",
-        );
+        let py_file = dir.write_file("src/client.py", "resp = requests.get(url, verify=False)\n");
         let ts_file = dir.write_file(
             "src/agent.ts",
             "const agent = new https.Agent({ rejectUnauthorized: false });\n\
@@ -1212,11 +1221,21 @@ mod tests {
             make_sym(rs_file, "build_client"),
         ];
         let findings = run_security(&syms, None);
-        assert_eq!(findings.len(), 5, "expected 3 TLS + 2 CORS findings, got {findings:?}");
+        assert_eq!(
+            findings.len(),
+            5,
+            "expected 3 TLS + 2 CORS findings, got {findings:?}"
+        );
         assert!(findings.iter().all(|f| f.kind == SlopKind::UnsafeAudit));
 
-        let high_count = findings.iter().filter(|f| f.severity == Severity::High).count();
-        let med_count = findings.iter().filter(|f| f.severity == Severity::Medium).count();
+        let high_count = findings
+            .iter()
+            .filter(|f| f.severity == Severity::High)
+            .count();
+        let med_count = findings
+            .iter()
+            .filter(|f| f.severity == Severity::Medium)
+            .count();
         assert_eq!(high_count, 3);
         assert_eq!(med_count, 2);
         assert!(findings

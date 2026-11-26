@@ -36,12 +36,10 @@ pub struct DelooperEngine;
 
 impl DelooperEngine {
     /// Analyzes all circular dependency loops and computes top-engineer de-looping strategies
-    pub fn compute_deloop_plans(
-        symbols: &[Symbol],
-        graph: &SymbolGraph,
-    ) -> Vec<DeloopPlan> {
+    pub fn compute_deloop_plans(symbols: &[Symbol], graph: &SymbolGraph) -> Vec<DeloopPlan> {
         let raw_cycles = graph.find_circular_dependencies();
-        let sym_map: HashMap<&str, &Symbol> = symbols.iter().map(|s| (s.name.as_str(), s)).collect();
+        let sym_map: HashMap<&str, &Symbol> =
+            symbols.iter().map(|s| (s.name.as_str(), s)).collect();
         let degrees = graph.compute_degrees();
 
         let mut plans = Vec::new();

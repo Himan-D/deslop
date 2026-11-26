@@ -132,9 +132,7 @@ pub fn render_html_graph(
         // Also attach cycle findings whose title mentions this symbol if not already attached.
         if all_cycle_names.contains(sym.name.as_str()) {
             for f in findings {
-                if f.kind == SlopKind::Cycle
-                    && f.symbol_id != sym.id
-                    && f.title.contains(&sym.name)
+                if f.kind == SlopKind::Cycle && f.symbol_id != sym.id && f.title.contains(&sym.name)
                 {
                     sym_findings.push(f);
                 }

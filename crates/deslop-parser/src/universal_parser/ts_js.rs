@@ -71,16 +71,8 @@ pub(super) fn extract_ts_js_nodes(
                                     Visibility::Private
                                 };
                                 register_ts_fn(
-                                    path,
-                                    file_str,
-                                    source,
-                                    value_node,
-                                    qualified,
-                                    fn_name,
-                                    false,
-                                    visibility,
-                                    symbols,
-                                    edges,
+                                    path, file_str, source, value_node, qualified, fn_name, false,
+                                    visibility, symbols, edges,
                                 );
                             }
                         }
@@ -442,12 +434,7 @@ fn extract_ts_imports(
     }
 }
 
-fn collect_import_clause(
-    node: Node,
-    source: &str,
-    module_target: &str,
-    imports: &mut Vec<Import>,
-) {
+fn collect_import_clause(node: Node, source: &str, module_target: &str, imports: &mut Vec<Import>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {

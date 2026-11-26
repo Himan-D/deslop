@@ -86,8 +86,10 @@ impl DetectionRule for TollboothWrapperRule {
 /// Constructors and conversions are thin by convention, not by accident.
 fn is_constructor_like(name: &str) -> bool {
     let bare = bare_name(name);
-    matches!(bare, "new" | "default" | "from" | "build" | "create" | "open" | "init" | "with")
-        || bare.starts_with("with_")
+    matches!(
+        bare,
+        "new" | "default" | "from" | "build" | "create" | "open" | "init" | "with"
+    ) || bare.starts_with("with_")
         || bare.starts_with("from_")
         || bare.starts_with("new_")
 }

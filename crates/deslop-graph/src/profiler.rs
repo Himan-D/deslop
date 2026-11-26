@@ -63,7 +63,10 @@ impl StackProfiler {
         // Identify root entrypoint nodes (fan-in == 0 or public / main)
         let mut root_indices = Vec::new();
         for idx in graph.graph.node_indices() {
-            let in_deg = graph.graph.neighbors_directed(idx, Direction::Incoming).count();
+            let in_deg = graph
+                .graph
+                .neighbors_directed(idx, Direction::Incoming)
+                .count();
             let sym = &graph.graph[idx];
             if in_deg == 0 || sym.name == "main" || sym.name.ends_with("::main") {
                 root_indices.push(idx);
@@ -118,7 +121,9 @@ impl StackProfiler {
             // Identify static symbols with zero runtime samples
             for idx in graph.graph.node_indices() {
                 let sym = &graph.graph[idx];
-                let has_sample = samples.iter().any(|(f, _)| f.contains(&sym.name) || sym.name.contains(f));
+                let has_sample = samples
+                    .iter()
+                    .any(|(f, _)| f.contains(&sym.name) || sym.name.contains(f));
                 if !has_sample {
                     runtime_cold_symbols.push(sym.name.clone());
                 }
@@ -166,7 +171,10 @@ impl StackProfiler {
         if neighbors.is_empty() {
             // Leaf reached -> record path
             if path.len() > 1 {
-                let frame_names: Vec<String> = path.iter().map(|idx| graph.graph[*idx].name.clone()).collect();
+                let frame_names: Vec<String> = path
+                    .iter()
+                    .map(|idx| graph.graph[*idx].name.clone())
+                    .collect();
                 let tollbooth_count = path
                     .iter()
                     .filter(|idx| {

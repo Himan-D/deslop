@@ -148,7 +148,11 @@ impl GitChurnAnalyzer {
                 }
             }
         }
-        temporal_couplings.sort_by(|a, b| b.coupling_pct.partial_cmp(&a.coupling_pct).unwrap_or(std::cmp::Ordering::Equal));
+        temporal_couplings.sort_by(|a, b| {
+            b.coupling_pct
+                .partial_cmp(&a.coupling_pct)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Some(ChurnAnalysisReport {
             total_commits_analyzed: total_commits,

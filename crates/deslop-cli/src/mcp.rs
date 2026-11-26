@@ -490,8 +490,7 @@ impl McpServer {
         let (parsed, graph, findings) = Self::scan_codebase(path)?;
         let slop_index =
             SlopDetectorEngine::calculate_slop_index(parsed.stats.total_lines_of_code, &findings);
-        let score_reliable =
-            deslop_detector::score_is_reliable(parsed.stats.total_lines_of_code);
+        let score_reliable = deslop_detector::score_is_reliable(parsed.stats.total_lines_of_code);
 
         if let Some(git_ref) = base {
             let diff = crate::commands::baseline::diff_against(path, git_ref, &findings)?;
@@ -691,14 +690,12 @@ impl McpServer {
     fn call_prune_diff(path: &Path) -> anyhow::Result<String> {
         let (parsed, _graph, findings) = Self::scan_codebase(path)?;
         let callsites = crate::commands::common::callsite_index(&parsed);
-        let set = deslop_inversion::RefactorEngine::rewrite_set(
-            &findings,
-            &parsed.symbols,
-            &callsites,
-        )?;
+        let set =
+            deslop_inversion::RefactorEngine::rewrite_set(&findings, &parsed.symbols, &callsites)?;
         if set.rewrites.is_empty() {
             return Ok(
-                "Codebase is clean. Zero safely prunable tollbooths or dead code found.".to_string(),
+                "Codebase is clean. Zero safely prunable tollbooths or dead code found."
+                    .to_string(),
             );
         }
         let mut out = crate::commands::prune::unified_patch(path, &set.rewrites);

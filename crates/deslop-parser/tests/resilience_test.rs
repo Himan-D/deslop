@@ -50,7 +50,11 @@ fn universal_parser_survives_malformed_and_partial_inputs() {
         for src in *inputs {
             let parsed = parser.parse(path, src);
             // Must return a valid ParsedFile without panicking.
-            let _ = (parsed.symbols.len(), parsed.edges.len(), parsed.imports.len());
+            let _ = (
+                parsed.symbols.len(),
+                parsed.edges.len(),
+                parsed.imports.len(),
+            );
         }
     }
 }

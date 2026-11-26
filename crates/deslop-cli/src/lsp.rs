@@ -101,10 +101,9 @@ impl LspServer {
                         if let Some(uri) = doc.get("uri").and_then(|u| u.as_str()) {
                             let file_str = uri.trim_start_matches("file://");
                             let file_path = PathBuf::from(file_str);
-                            let root = self
-                                .root_path
-                                .clone()
-                                .unwrap_or_else(|| file_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+                            let root = self.root_path.clone().unwrap_or_else(|| {
+                                file_path.parent().unwrap_or(Path::new(".")).to_path_buf()
+                            });
                             self.publish_diagnostics_for_workspace(&root)?;
                         }
                     }
@@ -124,7 +123,7 @@ impl LspServer {
                     json!({
                         "title": "Prune unreachable dead code (deslop prune)",
                         "kind": "source.organizeImports"
-                    })
+                    }),
                 ];
                 self.send_response(req.id, json!(actions))?;
             }
@@ -190,10 +189,13 @@ impl LspServer {
             }
 
             for (uri, diags) in file_diags {
-                self.send_notification("textDocument/publishDiagnostics", json!({
-                    "uri": uri,
-                    "diagnostics": diags
-                }))?;
+                self.send_notification(
+                    "textDocument/publishDiagnostics",
+                    json!({
+                        "uri": uri,
+                        "diagnostics": diags
+                    }),
+                )?;
             }
         }
 

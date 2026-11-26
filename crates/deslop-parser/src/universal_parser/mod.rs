@@ -81,19 +81,13 @@ fn extract_tree_sitter_ast(
 
     match lang {
         Language::Python => {
-            python::extract_python_nodes(path, &file_str, content, root, None, symbols, edges, imports);
+            python::extract_python_nodes(
+                path, &file_str, content, root, None, symbols, edges, imports,
+            );
         }
         Language::TypeScript | Language::JavaScript => {
             ts_js::extract_ts_js_nodes(
-                path,
-                &file_str,
-                content,
-                root,
-                None,
-                false,
-                symbols,
-                edges,
-                imports,
+                path, &file_str, content, root, None, false, symbols, edges, imports,
             );
         }
         Language::Go => {

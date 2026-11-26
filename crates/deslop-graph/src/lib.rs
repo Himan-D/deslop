@@ -185,8 +185,7 @@ impl SymbolGraph {
                         .neighbors_directed(u, Direction::Outgoing)
                         .any(|v| {
                             scc_set.contains(&v)
-                                && self.edge_resolution(u, v)
-                                    == Some(EdgeResolution::BareHeuristic)
+                                && self.edge_resolution(u, v) == Some(EdgeResolution::BareHeuristic)
                         })
                 });
                 let cycle_names: Vec<String> = scc
@@ -738,10 +737,7 @@ mod tests {
             sym("http.go::Get", "Get", "http.go", Visibility::Public),
             sym("other.go::Get", "Get", "other.go", Visibility::Public),
         ];
-        let edges = vec![
-            edge("main.py::run", "parse"),
-            edge("main.go::serve", "Get"),
-        ];
+        let edges = vec![edge("main.py::run", "parse"), edge("main.go::serve", "Get")];
         let mut imports = imports_for("main.py", &[("parse", "pkg.sub")]);
         imports.extend(imports_for("main.go", &[("Get", "net/http")]));
         let sg = SymbolGraph::from_parsed_with_imports(&symbols, &edges, &imports);

@@ -138,7 +138,10 @@ mod tests {
         };
         let log = to_sarif(&[f], Path::new("."));
         let driver = &log["runs"][0]["tool"]["driver"];
-        assert_eq!(driver["informationUri"], "https://github.com/Himan-D/deslop");
+        assert_eq!(
+            driver["informationUri"],
+            "https://github.com/Himan-D/deslop"
+        );
         let rule = &driver["rules"][0];
         assert_eq!(rule["id"], "HardcodedSecret");
         assert_eq!(rule["properties"]["tags"], json!(["security"]));

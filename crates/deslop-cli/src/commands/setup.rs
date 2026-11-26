@@ -197,10 +197,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(&merged).expect("output should be valid JSON");
 
         assert_eq!(parsed["otherTopLevel"], json!(true));
-        assert_eq!(
-            parsed["mcpServers"]["filesystem"]["command"],
-            json!("npx")
-        );
+        assert_eq!(parsed["mcpServers"]["filesystem"]["command"], json!("npx"));
         assert_eq!(
             parsed["mcpServers"]["deslop"],
             json!({
@@ -265,13 +262,22 @@ mod tests {
 
         let claude_cfg: Value =
             serde_json::from_str(&fs::read_to_string(&mcp_path).unwrap()).unwrap();
-        assert_eq!(claude_cfg["mcpServers"]["existing"]["command"], json!("foo"));
-        assert_eq!(claude_cfg["mcpServers"]["deslop"]["command"], json!("deslop"));
+        assert_eq!(
+            claude_cfg["mcpServers"]["existing"]["command"],
+            json!("foo")
+        );
+        assert_eq!(
+            claude_cfg["mcpServers"]["deslop"]["command"],
+            json!("deslop")
+        );
 
         let cursor_path = temp_dir.join(".cursor/mcp.json");
         let cursor_cfg: Value =
             serde_json::from_str(&fs::read_to_string(&cursor_path).unwrap()).unwrap();
-        assert_eq!(cursor_cfg["mcpServers"]["deslop"]["command"], json!("deslop"));
+        assert_eq!(
+            cursor_cfg["mcpServers"]["deslop"]["command"],
+            json!("deslop")
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

@@ -101,7 +101,10 @@ export const Card = ({ id }: Props) => <div>{id}</div>;
     assert!(!fmt.is_glob);
 
     assert!(
-        parsed.imports.iter().any(|i| i.local == "parse" && !i.is_glob),
+        parsed
+            .imports
+            .iter()
+            .any(|i| i.local == "parse" && !i.is_glob),
         "parse import should be extracted: {:?}",
         parsed.imports
     );
@@ -114,7 +117,10 @@ export const Card = ({ id }: Props) => <div>{id}</div>;
     assert!(utils.is_glob);
 
     assert!(
-        parsed.imports.iter().any(|i| i.local == "React" && !i.is_glob),
+        parsed
+            .imports
+            .iter()
+            .any(|i| i.local == "React" && !i.is_glob),
         "React default import should be extracted: {:?}",
         parsed.imports
     );

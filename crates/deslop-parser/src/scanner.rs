@@ -206,7 +206,11 @@ fn path_role_attributes(path: &Path, root: &Path) -> Vec<String> {
     if rel.components().any(|c| {
         matches!(
             c.as_os_str().to_str(),
-            Some("benches") | Some("bench") | Some("examples") | Some("testdata") | Some("fixtures")
+            Some("benches")
+                | Some("bench")
+                | Some("examples")
+                | Some("testdata")
+                | Some("fixtures")
         )
     }) {
         attrs.push(AUX_PATH_ATTR.to_string());

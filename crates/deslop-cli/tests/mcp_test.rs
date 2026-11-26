@@ -68,7 +68,11 @@ fn mcp_lists_check_and_scan_and_gates_sloppy_app() {
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str(l).expect("valid JSON-RPC response line"))
         .collect();
-    assert_eq!(responses.len(), 3, "expected 3 JSON-RPC responses, got {stdout}");
+    assert_eq!(
+        responses.len(),
+        3,
+        "expected 3 JSON-RPC responses, got {stdout}"
+    );
 
     // 1. initialize
     assert_eq!(responses[0]["id"], 1);
@@ -79,12 +83,15 @@ fn mcp_lists_check_and_scan_and_gates_sloppy_app() {
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .expect("tools array");
-    let names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
-    assert!(names.contains(&"deslop_check"), "missing deslop_check: {names:?}");
-    assert!(names.contains(&"deslop_scan"), "missing deslop_scan: {names:?}");
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    assert!(
+        names.contains(&"deslop_check"),
+        "missing deslop_check: {names:?}"
+    );
+    assert!(
+        names.contains(&"deslop_scan"),
+        "missing deslop_scan: {names:?}"
+    );
 
     // 3. tools/call deslop_check
     assert_eq!(responses[2]["id"], 3);

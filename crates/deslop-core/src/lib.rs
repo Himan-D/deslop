@@ -429,7 +429,9 @@ mod tests {
         assert!(test_symbol("test_parse", "lib.rs", vec![]).is_test_entrypoint());
         // Directory membership comes from the scanner (root-relative attribute),
         // so the bare path alone no longer decides.
-        assert!(test_symbol("helper", "lib.rs", vec![TEST_PATH_ATTR.to_string()]).is_test_entrypoint());
+        assert!(
+            test_symbol("helper", "lib.rs", vec![TEST_PATH_ATTR.to_string()]).is_test_entrypoint()
+        );
         assert!(!test_symbol("helper", "tests/integration.rs", vec![]).is_test_entrypoint());
         // Test file stems are root-independent.
         assert!(test_symbol("helper", "src/parser_test.rs", vec![]).is_test_entrypoint());

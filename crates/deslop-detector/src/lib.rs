@@ -373,7 +373,11 @@ mod tests {
         let findings = CircularDependencyRule.detect(&ctx);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].kind, SlopKind::Cycle);
-        assert_eq!(findings[0].severity, Severity::High, "two files, unambiguous names");
+        assert_eq!(
+            findings[0].severity,
+            Severity::High,
+            "two files, unambiguous names"
+        );
         assert_eq!(findings[0].confidence, 0.95);
     }
 
@@ -388,7 +392,11 @@ mod tests {
         let symbols = vec![a, b, other];
         let edges = vec![
             edge_of(DependencyEdgeKind::Calls, "a.rs::Config::new", "new"),
-            edge_of(DependencyEdgeKind::Calls, "b.rs::Builder::new", "Config::new"),
+            edge_of(
+                DependencyEdgeKind::Calls,
+                "b.rs::Builder::new",
+                "Config::new",
+            ),
         ];
         let graph = SymbolGraph::from_parsed(&symbols, &edges);
         let ctx = DetectionContext {
@@ -413,8 +421,16 @@ mod tests {
         b.file_path = PathBuf::from("b.rs");
         let symbols = vec![a, b, other];
         let edges = vec![
-            edge_of(DependencyEdgeKind::Calls, "a.rs::Config::new", "Builder::new"),
-            edge_of(DependencyEdgeKind::Calls, "b.rs::Builder::new", "Config::new"),
+            edge_of(
+                DependencyEdgeKind::Calls,
+                "a.rs::Config::new",
+                "Builder::new",
+            ),
+            edge_of(
+                DependencyEdgeKind::Calls,
+                "b.rs::Builder::new",
+                "Config::new",
+            ),
         ];
         let graph = SymbolGraph::from_parsed(&symbols, &edges);
         let ctx = DetectionContext {
@@ -547,12 +563,7 @@ mod tests {
         );
         other_domain.file_path = PathBuf::from("src/domain/order.rs");
 
-        let mut infra_sym = sym(
-            "src/infra/sql.rs::exec",
-            "exec",
-            SymbolKind::Function,
-            10,
-        );
+        let mut infra_sym = sym("src/infra/sql.rs::exec", "exec", SymbolKind::Function, 10);
         infra_sym.file_path = PathBuf::from("src/infra/sql.rs");
 
         let symbols = vec![exempted_domain, other_domain, infra_sym];
