@@ -33,6 +33,14 @@ inputs:
     description: 'Release tag to download (e.g. v0.1.0), "latest", or "source" to build via cargo'
     required: false
     default: 'latest'
+  comment-pr:
+    description: 'Post or update a sticky summary comment on pull_request events (true/false)'
+    required: false
+    default: 'false'
+  github-token:
+    description: 'GitHub token used when comment-pr is true'
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   sarif-file:
@@ -171,3 +179,62 @@ runs:
             exit 1
             ;;
         esac
+
+    - name: Comment on Pull Request
+      if: ${{ always() && inputs.comment-pr == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_BASE: ${{ inputs.base }}
+      run: |
+        set -euo pipefail
+
+        SCAN_ARGS=("scan" "$INPUT_PATH" "--format" "json")
+        if [ -n "$INPUT_BASE" ]; then
+          SCAN_ARGS+=("--base" "$INPUT_BASE")
+        fi
+
+        SCAN_JSON="$(deslop "${SCAN_ARGS[@]}" 2>/dev/null || true)"
+        NEXT_JSON="$(deslop next "$INPUT_PATH" --format json 2>/dev/null || true)"
+
+        BODY="$(python3 - <<'PY' "$SCAN_JSON" "$NEXT_JSON"
+        import json, sys
+        scan_raw, next_raw = sys.argv[1], sys.argv[2]
+        try:
+            scan = json.loads(scan_raw)
+        except Exception:
+            scan = {}
+        try:
+            nxt = json.loads(next_raw)
+        except Exception:
+            nxt = {}
+
+        slop = scan.get("slop_index", "?")
+        count = scan.get("finding_count", 0)
+        lines = [
+            "<!-- deslop-pr-comment -->",
+            "### Deslop Architectural & SAST Report",
+            f"- **Slop Index:** `{slop} / 100` | **Findings:** `{count}`",
+        ]
+        items = nxt.get("items") or []
+        if items:
+            top = items[0]
+            lines.append(
+                f"- **Top Priority (`deslop next`):** `{top.get('kind')}` ({top.get('severity')}) at `{top.get('file')}:{top.get('line')}` — {top.get('remediation')}"
+            )
+        else:
+            lines.append("- No architectural or security findings detected.")
+        print("\n".join(lines))
+        PY
+        )"
+
+        PR_NUM="${{ github.event.pull_request.number }}"
+        REPO="${{ github.repository }}"
+        EXISTING_ID="$(gh api "repos/${REPO}/issues/${PR_NUM}/comments" --jq '.[] | select(.body | contains("<!-- deslop-pr-comment -->")) | .id' | head -n 1 || true)"
+
+        if [ -n "$EXISTING_ID" ]; then
+          gh api -X PATCH "repos/${REPO}/issues/comments/${EXISTING_ID}" -f body="$BODY" >/dev/null
+        else
+          gh pr comment "$PR_NUM" --repo "$REPO" --body "$BODY" >/dev/null
+        fi
