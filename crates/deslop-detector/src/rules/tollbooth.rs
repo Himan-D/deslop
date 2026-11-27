@@ -73,6 +73,7 @@ impl DetectionRule for TollboothWrapperRule {
                                 target, sym.name
                             ),
                             estimated_lines_saved: sym.loc,
+                            inline_target: Some(target.to_string()),
                         });
                     }
                 }

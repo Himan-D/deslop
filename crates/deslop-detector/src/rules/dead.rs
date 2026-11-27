@@ -94,6 +94,7 @@ impl DetectionRule for DeadOrphanRule {
                 ),
                 remediation: "Delete the unused symbol or verify if it is intended to be called by an upcoming feature.".to_string(),
                 estimated_lines_saved: sym.loc,
+                inline_target: None,
             })
             .collect()
     }

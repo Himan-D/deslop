@@ -245,7 +245,42 @@ fn rust_default_expr(ty: &str) -> Option<String> {
         "f32" | "f64" => Some("0.0".to_string()),
         "()" => Some("()".to_string()),
         "PathBuf" | "std::path::PathBuf" => Some("std::path::PathBuf::from(\".\")".to_string()),
+        "Duration" | "std::time::Duration" => Some("std::time::Duration::from_secs(0)".to_string()),
         _ => {
+            if let Some(inner) = t.strip_prefix("Box<").and_then(|s| s.strip_suffix('>')) {
+                return rust_default_expr(inner).map(|d| format!("Box::new({d})"));
+            }
+            if let Some(inner) = t
+                .strip_prefix("Arc<")
+                .or_else(|| t.strip_prefix("std::sync::Arc<"))
+                .and_then(|s| s.strip_suffix('>'))
+            {
+                return rust_default_expr(inner).map(|d| format!("std::sync::Arc::new({d})"));
+            }
+            if let Some(inner) = t
+                .strip_prefix("Rc<")
+                .or_else(|| t.strip_prefix("std::rc::Rc<"))
+                .and_then(|s| s.strip_suffix('>'))
+            {
+                return rust_default_expr(inner).map(|d| format!("std::rc::Rc::new({d})"));
+            }
+            if let Some(inner) = t
+                .strip_prefix("Cow<")
+                .or_else(|| t.strip_prefix("std::borrow::Cow<"))
+                .and_then(|s| s.strip_suffix('>'))
+            {
+                let owned = inner.rsplit(',').next().unwrap_or(inner).trim();
+                return match owned {
+                    "str" => Some("std::borrow::Cow::Borrowed(\"\")".to_string()),
+                    "Path" | "std::path::Path" => {
+                        Some("std::borrow::Cow::Borrowed(std::path::Path::new(\".\"))".to_string())
+                    }
+                    _ if owned.starts_with('[') => {
+                        Some("std::borrow::Cow::Borrowed(&[])".to_string())
+                    }
+                    _ => None,
+                };
+            }
             if t.starts_with("Vec<") {
                 return Some("Vec::new()".to_string());
             }
@@ -490,7 +525,7 @@ impl TestEmitter for TypeScriptTestEmitter {
         code.push_str("// Characterization tests synthesized by deslop (vitest / jest).\n");
         code.push_str("import { describe, it, expect } from 'vitest';\n");
         code.push_str(&format!(
-            "import {{ {import_target} }} from './{stem}'; // TODO(deslop): fix import path if needed\n\n"
+            "import {{ {import_target} }} from './{stem}';\n\n"
         ));
         code.push_str(&format!(
             "describe('{} characterization', () => {{\n",
@@ -567,6 +602,53 @@ fn parse_py_params(params: &str, is_method: bool) -> Vec<String> {
         .collect()
 }
 
+fn python_module_path(file_path: &std::path::Path, fallback_stem: &str) -> String {
+    let mut parts: Vec<String> = file_path
+        .with_extension("")
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(os) => Some(os.to_string_lossy().replace('-', "_")),
+            _ => None,
+        })
+        .collect();
+    if let Some(idx) = parts.iter().rposition(|p| p == "src" || p == "lib") {
+        parts = parts[idx + 1..].to_vec();
+    } else if file_path.is_absolute() && parts.len() > 2 {
+        parts = parts[parts.len() - 2..].to_vec();
+    }
+    if parts.last().is_some_and(|p| p == "__init__") {
+        parts.pop();
+    }
+    if parts.is_empty() {
+        fallback_stem.replace('-', "_")
+    } else {
+        parts.join(".")
+    }
+}
+
+fn go_package_name(file_path: &std::path::Path, _fallback_stem: &str) -> String {
+    if file_path.file_name().is_some_and(|n| n == "main.go") {
+        return "main".to_string();
+    }
+    file_path
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|s| {
+            s.to_string_lossy()
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>()
+        })
+        .filter(|s| !s.is_empty() && s != "." && s != "src")
+        .unwrap_or_else(|| "main".to_string())
+}
+
 impl TestEmitter for PythonTestEmitter {
     fn language(&self) -> Language {
         Language::Python
@@ -592,11 +674,10 @@ impl TestEmitter for PythonTestEmitter {
             ),
         };
 
+        let py_module = python_module_path(&symbol.file_path, &stem);
         let mut code = String::new();
         code.push_str("# Characterization tests synthesized by deslop (pytest).\n");
-        code.push_str(&format!(
-            "from {stem} import {import_target}  # TODO(deslop): fix import if needed\n\n\n"
-        ));
+        code.push_str(&format!("from {py_module} import {import_target}\n\n\n"));
         code.push_str(&format!(
             "class Test{}Characterization:\n",
             sanitize_ident(&symbol.name)
@@ -709,11 +790,10 @@ impl TestEmitter for GoTestEmitter {
         };
         let call = format!("{receiver}{call_name}({args_str})");
 
+        let go_pkg = go_package_name(&symbol.file_path, &stem);
         let mut code = String::new();
         code.push_str("// Characterization tests synthesized by deslop (go test).\n");
-        code.push_str(&format!(
-            "package {stem} // TODO(deslop): match the target package\n\n"
-        ));
+        code.push_str(&format!("package {go_pkg}\n\n"));
         if has_result {
             code.push_str("import (\n    \"reflect\"\n    \"testing\"\n)\n\n");
         } else {

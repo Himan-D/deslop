@@ -117,3 +117,30 @@ pub fn print_llm_status(opted_in: bool) {
     };
     println!("{:<28} {}", "AI Reasoning Engine:".bold(), status_str);
 }
+
+pub fn severity_weight(severity: deslop_core::Severity) -> f64 {
+    match severity {
+        deslop_core::Severity::Critical => 15.0,
+        deslop_core::Severity::High => 8.0,
+        deslop_core::Severity::Medium => 4.0,
+        deslop_core::Severity::Low => 1.5,
+    }
+}
+
+pub fn git_toplevel(path: &Path) -> Option<std::path::PathBuf> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(s))
+    }
+}

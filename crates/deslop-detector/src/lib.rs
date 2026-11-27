@@ -459,6 +459,7 @@ mod tests {
             description: String::new(),
             remediation: String::new(),
             estimated_lines_saved: 0,
+            inline_target: None,
         };
         // One Critical in 51 LOC used to saturate at 100; now it is bounded.
         let small = SlopDetectorEngine::calculate_slop_index(51, std::slice::from_ref(&finding));

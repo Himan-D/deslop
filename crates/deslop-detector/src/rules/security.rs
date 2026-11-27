@@ -123,6 +123,7 @@ impl DetectionRule for SecurityRule {
                             description: format!("{detail} `{snippet}`"),
                             remediation: "Move secrets to environment variables or a secrets manager instead of hardcoding them in source.".to_string(),
                             estimated_lines_saved: 0,
+                            inline_target: None,
                         });
                     }
                 }
@@ -140,6 +141,7 @@ impl DetectionRule for SecurityRule {
                             description: format!("{detail} `{snippet}`"),
                             remediation: "Avoid dynamic code evaluation, shell invocation with `-c`/`shell=True`, or string-interpolated SQL; use parameterized queries and direct argument arrays.".to_string(),
                             estimated_lines_saved: 0,
+                            inline_target: None,
                         });
                     }
                 }
@@ -157,6 +159,7 @@ impl DetectionRule for SecurityRule {
                             description: format!("{detail} `{snippet}`"),
                             remediation: "Use safe deserialization alternatives such as `json.loads` or `yaml.safe_load` / `SafeLoader`.".to_string(),
                             estimated_lines_saved: 0,
+                            inline_target: None,
                         });
                     }
                 }
@@ -174,6 +177,7 @@ impl DetectionRule for SecurityRule {
                             description: format!("{detail} `{snippet}`"),
                             remediation: "Use modern cryptographic primitives (e.g. SHA-256+, Argon2/bcrypt for passwords, and a CSPRNG for tokens/sessions).".to_string(),
                             estimated_lines_saved: 0,
+                            inline_target: None,
                         });
                     }
                 }
@@ -193,6 +197,7 @@ impl DetectionRule for SecurityRule {
                             description: format!("{detail} `{snippet}`"),
                             remediation: "Document `// SAFETY:` invariants above `unsafe` blocks, avoid `dangerouslySetInnerHTML` with untrusted data, enable TLS certificate verification, avoid wildcard CORS with credentials, and use `https://` for non-local URLs.".to_string(),
                             estimated_lines_saved: 0,
+                            inline_target: None,
                         });
                     }
                 }

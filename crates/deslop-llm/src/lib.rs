@@ -34,12 +34,17 @@ impl LlmClient {
             .build()
             .unwrap_or_else(|_| reqwest::blocking::Client::new());
 
+        let model_override = env::var("DESLOP_LLM_MODEL")
+            .ok()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
+
         if let Ok(key) = env::var("GEMINI_API_KEY").or_else(|_| env::var("GOOGLE_API_KEY")) {
             if !key.trim().is_empty() {
                 return Self {
                     provider: LlmProvider::Gemini,
                     api_key: Some(key),
-                    model: "gemini-2.5-flash".to_string(),
+                    model: model_override.unwrap_or_else(|| "gemini-2.5-flash".to_string()),
                     http_client,
                 };
             }
@@ -50,7 +55,7 @@ impl LlmClient {
                 return Self {
                     provider: LlmProvider::OpenAI,
                     api_key: Some(key),
-                    model: "gpt-4o-mini".to_string(),
+                    model: model_override.unwrap_or_else(|| "gpt-4o-mini".to_string()),
                     http_client,
                 };
             }
@@ -61,7 +66,7 @@ impl LlmClient {
                 return Self {
                     provider: LlmProvider::Anthropic,
                     api_key: Some(key),
-                    model: "claude-sonnet-5-5".to_string(),
+                    model: model_override.unwrap_or_else(|| "claude-sonnet-4-20250514".to_string()),
                     http_client,
                 };
             }
@@ -72,7 +77,7 @@ impl LlmClient {
                 return Self {
                     provider: LlmProvider::OpenRouter,
                     api_key: Some(key),
-                    model: "google/gemini-2.5-flash".to_string(),
+                    model: model_override.unwrap_or_else(|| "google/gemini-2.5-flash".to_string()),
                     http_client,
                 };
             }

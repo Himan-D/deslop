@@ -1,5 +1,7 @@
 use super::baseline::{self, BaselineDiff};
-use super::common::{print_llm_status, scan_and_analyze, FindingRow};
+use super::common::{
+    git_toplevel, print_llm_status, scan_and_analyze, severity_weight, FindingRow,
+};
 use super::sarif::to_sarif;
 use colored::*;
 use deslop_core::format_location;
@@ -9,8 +11,7 @@ use deslop_graph::{churn::ChurnAnalysisReport, GitChurnAnalyzer};
 use deslop_llm::LlmClient;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 use tabled::{Table, Tabled};
 
 /// Baseline comparison details, present when `--base` was used.
@@ -83,33 +84,6 @@ pub fn build_scan_report(
         findings,
         baseline: None,
         hotspots: None,
-    }
-}
-
-fn severity_weight(severity: Severity) -> f64 {
-    match severity {
-        Severity::Critical => 15.0,
-        Severity::High => 8.0,
-        Severity::Medium => 4.0,
-        Severity::Low => 1.5,
-    }
-}
-
-fn git_toplevel(path: &Path) -> Option<PathBuf> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(s))
     }
 }
 
@@ -398,6 +372,7 @@ mod tests {
             description: "thin wrapper".to_string(),
             remediation: "inline".to_string(),
             estimated_lines_saved: lines_saved,
+            inline_target: None,
         }
     }
 
@@ -441,6 +416,7 @@ mod tests {
             description: "desc".to_string(),
             remediation: "fix".to_string(),
             estimated_lines_saved: 5,
+            inline_target: None,
         }
     }
 

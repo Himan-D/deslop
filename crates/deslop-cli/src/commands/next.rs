@@ -1,13 +1,12 @@
 use super::baseline::relative_key;
-use super::common::scan_and_analyze;
+use super::common::{git_toplevel, scan_and_analyze, severity_weight};
 use colored::*;
 use deslop_core::{Severity, SlopFinding, SlopKind};
 use deslop_detector::SlopDetectorEngine;
 use deslop_graph::GitChurnAnalyzer;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 const VERIFICATION_COMMAND: &str = "deslop check .";
 
@@ -35,38 +34,11 @@ pub struct NextReport {
     pub verification_command: &'static str,
 }
 
-fn severity_weight(severity: Severity) -> f64 {
-    match severity {
-        Severity::Critical => 15.0,
-        Severity::High => 8.0,
-        Severity::Medium => 4.0,
-        Severity::Low => 1.5,
-    }
-}
-
 fn category_boost(kind: SlopKind) -> f64 {
     if kind.is_security() || matches!(kind, SlopKind::Cycle | SlopKind::LayerViolation) {
         1.5
     } else {
         1.0
-    }
-}
-
-fn git_toplevel(path: &Path) -> Option<PathBuf> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(s))
     }
 }
 
@@ -210,6 +182,7 @@ pub fn run(path: &Path, format: &str, count: usize) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn sloppy_app_fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

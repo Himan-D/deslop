@@ -104,6 +104,12 @@ deslop prune ./path/to/codebase
 
 # Surgically apply refactors with automatic rollback if verification fails
 deslop apply ./path/to/codebase --verify "cargo test"
+
+# Return the single highest-priority finding to fix next (severity, security, git churn)
+deslop next ./path/to/codebase
+
+# Print or write MCP + AGENTS.md setup for Claude, Cursor, Codex, or Gemini
+deslop setup claude --write
 ```
 
 ---
@@ -187,6 +193,7 @@ The Slop Index is a heuristic, not a measurement of quality. It is a weighted co
 7. `deslop_scip`: Exports the complete symbol dependency graph in standard SCIP JSON format.
 8. `deslop_churn`: Analyzes git commit history to detect churn hotspots and hidden temporal coupling (files that co-change with 0 static imports).
 9. `deslop_check`: Runs the architectural quality gate (cycles, layer violations, High/Critical findings, and Slop Index threshold). Accepts `path` (target directory), `base` (optional git ref to diff new findings against), and `max_slop` (optional maximum allowed Slop Index).
+10. `deslop_next`: Returns the top-N highest-priority findings ranked by severity, security impact, and git churn.
 
 See [`docs/AGENT_SETUP.md`](docs/AGENT_SETUP.md) for copy-paste setup snippets for Claude Code, Cursor, Codex, Gemini CLI / Antigravity, `AGENTS.md`/`CLAUDE.md` rules, and pre-commit hooks.
 
@@ -215,7 +222,7 @@ Without the flag, or without a key, Deslop runs fully offline with zero external
 ## Full Command Reference & Secondary Subcommands
 
 <details>
-<summary>Expand all subcommands (<code>deep</code>, <code>profile</code>, <code>churn</code>, <code>lsp</code>, <code>capacity</code>, <code>scip</code>, <code>tui</code>, <code>trace</code>, <code>testgen</code>)</summary>
+<summary>Expand all subcommands (<code>deep</code>, <code>profile</code>, <code>churn</code>, <code>lsp</code>, <code>capacity</code>, <code>scip</code>, <code>tui</code>, <code>trace</code>, <code>testgen</code>, <code>graph</code>, <code>badge</code>)</summary>
 
 ```bash
 # Deep architectural analysis: package coupling, main sequence distance, and dominator bottlenecks
@@ -247,6 +254,12 @@ deslop trace ./path/to/codebase --spans ./spans.json
 
 # Synthesize compiling characterization tests (real invocations + determinism checks; #[ignore] + TODOs where a fixture needs you)
 deslop testgen ./path/to/codebase -o tests_invariants.rs
+
+# Export the symbol dependency graph to Mermaid, JSON, or interactive HTML
+deslop graph ./path/to/codebase --format html -o graph.html
+
+# Generate a Shields.io JSON endpoint or standalone SVG Slop Index badge
+deslop badge ./path/to/codebase --format svg -o badge.svg
 
 # Explain top findings / LLM-assisted narrative (only sends data when opted in + key set)
 deslop scan ./path/to/codebase --explain

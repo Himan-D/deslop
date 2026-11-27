@@ -152,6 +152,7 @@ fn make_finding(
             "Remove `{dep_name}` from `{manifest_name}` if unused, or verify it is only referenced by external tooling."
         ),
         estimated_lines_saved: 1,
+        inline_target: None,
     }
 }
 

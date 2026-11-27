@@ -770,6 +770,7 @@ mod tests {
             description: "Contains </script>".to_string(),
             remediation: String::new(),
             estimated_lines_saved: 0,
+            inline_target: None,
         };
 
         let html = render_html_graph(&graph, &[finding], 10).expect("render should succeed");

@@ -81,21 +81,24 @@ impl RefactorEngine {
         )
     }
 
-    /// Parses a tollbooth finding into its (wrapper, target) pair.
-    pub fn inline_target(finding: &SlopFinding) -> Option<(String, String)> {
+    /// Returns the (wrapper, target) pair for a tollbooth finding using structured fields.
+    pub fn inline_target(finding: &SlopFinding, symbols: &[Symbol]) -> Option<(String, String)> {
         if finding.kind != SlopKind::TollboothWrapper {
             return None;
         }
-        let target = finding
-            .description
-            .split("forwarding calls directly to `")
-            .nth(1)
-            .and_then(|s| s.split('`').next())?;
-        let wrapper = finding
-            .title
-            .trim_start_matches("Tollbooth Wrapper: `")
-            .trim_end_matches('`');
-        Some((wrapper.to_string(), target.to_string()))
+        let target = finding.inline_target.as_ref()?.clone();
+        let wrapper = symbols
+            .iter()
+            .find(|s| s.id == finding.symbol_id)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| {
+                finding
+                    .title
+                    .trim_start_matches("Tollbooth Wrapper: `")
+                    .trim_end_matches('`')
+                    .to_string()
+            });
+        Some((wrapper, target))
     }
 
     /// Computes the rewritten contents of every file that `apply` would
@@ -148,7 +151,16 @@ impl RefactorEngine {
             {
                 continue;
             }
-            if let Some((_, target)) = Self::inline_target(f) {
+            if f.kind == SlopKind::TollboothWrapper {
+                let Some((_, target)) = Self::inline_target(f, symbols) else {
+                    plan.skipped.push(SkippedItem {
+                        symbol_name: sym.name.clone(),
+                        file: f.file_path.clone(),
+                        reason: "missing structured inline_target; skipping unsafe deletion"
+                            .to_string(),
+                    });
+                    continue;
+                };
                 if !is_forwarding_free_function(&lines, sym, &target) {
                     plan.skipped.push(SkippedItem {
                         symbol_name: sym.name.clone(),
@@ -178,7 +190,7 @@ impl RefactorEngine {
                 lines_removed: end - start,
             });
 
-            if let Some((wrapper, target)) = Self::inline_target(f) {
+            if let Some((wrapper, target)) = Self::inline_target(f, symbols) {
                 if seen_inline.insert((wrapper.clone(), target.clone())) {
                     plan.inlines.push(PlannedInline {
                         wrapper: wrapper.clone(),
@@ -420,6 +432,7 @@ mod tests {
             description: desc.to_string(),
             remediation: String::new(),
             estimated_lines_saved: 3,
+            inline_target: None,
         }
     }
 
@@ -451,15 +464,16 @@ mod tests {
 
     #[test]
     fn inline_target_parses_wrapper_and_target() {
-        let f = finding(
+        let mut f = finding(
             SlopKind::TollboothWrapper,
             Path::new("x.rs"),
             "x.rs::scan",
             "Tollbooth Wrapper: `scan`",
             "Function `scan` is a thin pass-through forwarding calls directly to `scan_cached` with negligible logic.",
         );
+        f.inline_target = Some("scan_cached".to_string());
         assert_eq!(
-            RefactorEngine::inline_target(&f),
+            RefactorEngine::inline_target(&f, &[]),
             Some(("scan".to_string(), "scan_cached".to_string()))
         );
         assert!(RefactorEngine::is_prunable(&f));
@@ -471,7 +485,7 @@ mod tests {
             "God",
             "",
         );
-        assert_eq!(RefactorEngine::inline_target(&other), None);
+        assert_eq!(RefactorEngine::inline_target(&other, &[]), None);
         assert!(!RefactorEngine::is_prunable(&other));
     }
 
@@ -566,13 +580,15 @@ mod tests {
         let file = dir.join("lib.rs");
         let src = "fn scan_cached() {\n    1\n}\nfn scan() {\n    scan_cached()\n}\nfn run() {\n    scan();\n}\n";
         fs::write(&file, src).unwrap();
-        let findings = vec![finding(
+        let mut f = finding(
             SlopKind::TollboothWrapper,
             &file,
             &format!("{}::scan", file.display()),
             "Tollbooth Wrapper: `scan`",
             "Function `scan` is a thin pass-through forwarding calls directly to `scan_cached` with negligible logic.",
-        )];
+        );
+        f.inline_target = Some("scan_cached".to_string());
+        let findings = vec![f];
         let symbols = vec![sym(
             &format!("{}::scan", file.display()),
             "scan",
@@ -668,13 +684,15 @@ mod tests {
         let file = dir.join("lib.rs");
         let src = "fn of_block() -> usize {\n    let mut c = Counter::new();\n    c.visit();\n    c.n\n}\nfn visit() {}\n";
         fs::write(&file, src).unwrap();
-        let findings = vec![finding(
+        let mut f = finding(
             SlopKind::TollboothWrapper,
             &file,
             &format!("{}::of_block", file.display()),
             "Tollbooth Wrapper: `of_block`",
             "Function `of_block` is a thin pass-through forwarding calls directly to `visit` with negligible logic.",
-        )];
+        );
+        f.inline_target = Some("visit".to_string());
+        let findings = vec![f];
         let symbols = vec![sym(
             &format!("{}::of_block", file.display()),
             "of_block",

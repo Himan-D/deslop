@@ -60,6 +60,7 @@ impl DetectionRule for StructuralCloneRule {
                             "Parameterize the shared logic into a single reusable helper function."
                                 .to_string(),
                         estimated_lines_saved: duplicate.loc,
+                        inline_target: None,
                     });
                 }
             }

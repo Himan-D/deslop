@@ -99,6 +99,7 @@ mod tests {
             description: String::new(),
             remediation: "Break it.".into(),
             estimated_lines_saved: 0,
+            inline_target: None,
         };
         let log = to_sarif(&[f], Path::new("."));
         assert_eq!(log["version"], "2.1.0");
@@ -135,6 +136,7 @@ mod tests {
             description: String::new(),
             remediation: "Move to environment variable.".into(),
             estimated_lines_saved: 0,
+            inline_target: None,
         };
         let log = to_sarif(&[f], Path::new("."));
         let driver = &log["runs"][0]["tool"]["driver"];

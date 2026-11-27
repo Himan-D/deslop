@@ -48,6 +48,7 @@ impl DetectionRule for GhostAbstractionRule {
                             sym.name
                         ),
                         estimated_lines_saved: sym.loc + 10,
+                        inline_target: None,
                     });
                 }
             }

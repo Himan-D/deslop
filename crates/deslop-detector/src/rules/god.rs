@@ -50,6 +50,7 @@ impl DetectionRule for GodObjectRule {
                             ),
                             remediation: "Decompose this object into single-responsibility cohesive sub-modules.".to_string(),
                             estimated_lines_saved: sym.loc / 3,
+                            inline_target: None,
                         });
                     }
                 }

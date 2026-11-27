@@ -341,6 +341,9 @@ pub struct SlopFinding {
     pub description: String,
     pub remediation: String,
     pub estimated_lines_saved: usize,
+    /// Structured inline target for `TollboothWrapper` findings, avoiding prose parsing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_target: Option<String>,
 }
 
 impl DiagnosticLocation for SlopFinding {

@@ -69,6 +69,7 @@ impl DetectionRule for CircularDependencyRule {
                             "Break the cycle by extracting shared data/types into an independent leaf module or applying dependency inversion.".to_string()
                         },
                         estimated_lines_saved: 0,
+                        inline_target: None,
                     });
                 }
             }
@@ -234,6 +235,7 @@ fn detect_file_import_cycles(
             ),
             remediation: "Break the import cycle by extracting shared types/interfaces into an independent leaf module or applying dependency inversion.".to_string(),
             estimated_lines_saved: 0,
+            inline_target: None,
         });
     }
 }

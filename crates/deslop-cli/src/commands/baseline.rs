@@ -172,6 +172,7 @@ mod tests {
             description: String::new(),
             remediation: String::new(),
             estimated_lines_saved: 0,
+            inline_target: None,
         }
     }
 

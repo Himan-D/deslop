@@ -240,6 +240,7 @@ fn check_edge_violations(
                     "Invert dependency or extract a common interface into a lower domain layer."
                         .to_string(),
                 estimated_lines_saved: 0,
+                inline_target: None,
             });
         }
     }
@@ -274,6 +275,7 @@ fn check_edge_violations(
                     ),
                     remediation: "Apply Dependency Inversion Principle (DIP): higher layers should depend on abstractions in lower layers.".to_string(),
                     estimated_lines_saved: 0,
+                    inline_target: None,
                 });
             }
         }
@@ -302,6 +304,7 @@ fn check_edge_violations(
                     ),
                     remediation: "Extract shared types or logic into a common shared module outside the isolated boundary, or communicate via an explicit public interface.".to_string(),
                     estimated_lines_saved: 0,
+                    inline_target: None,
                 });
             }
         }
